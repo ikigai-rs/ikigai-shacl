@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test (native rudof + parity corpus)
+        run: cargo test
+
+  # The other half of the parity contract: shacl-engine (the browser validator) must produce
+  # the same outcome as rudof for every case in tests/corpus/ — both assert the same
+  # expected.json. See js-parity/parity.test.mjs.
+  js-parity:
+    name: shacl-engine parity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js-parity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: js-parity/package-lock.json
+      - run: npm ci
+      - run: npm test
