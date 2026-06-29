@@ -7,18 +7,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
-import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import rdf from 'rdf-ext'
-import ParserN3 from '@rdfjs/parser-n3'
+import rdf from '@zazuko/env'
+import { Parser } from 'n3'
 import Validator from 'shacl-engine/Validator.js'
 
+// Exactly the stack the browser loader (web-demo dist/shacl-loader.js) uses — @zazuko/env +
+// n3 + shacl-engine — so this CI suite guards the real browser implementation, not a proxy.
 const corpus = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'corpus')
 
-async function parse (ttl) {
-  const parser = new ParserN3({ factory: rdf })
-  return rdf.dataset().import(parser.import(Readable.from([ttl])))
+function parse (ttl) {
+  return rdf.dataset(new Parser({ factory: rdf }).parse(ttl))
 }
 
 // shacl-engine report → the portable ValidationOutcome (same shape as ikigai_shacl's).

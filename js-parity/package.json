@@ -12,6 +12,8 @@
   "type": "commonjs",
   "dependencies": {
     "@rdfjs/parser-n3": "^2.1.0",
+    "@zazuko/env": "^3.0.1",
+    "n3": "^2.1.0",
     "rdf-ext": "^2.6.0",
     "shacl-engine": "^1.1.1"
   }
