@@ -1,0 +1,7 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.org/> .
+ex:AccountShape a sh:NodeShape ;
+  sh:targetClass ex:Account ;
+  sh:property [ sh:path ex:owner ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path ex:balance ; sh:minCount 1 ; sh:datatype xsd:decimal ] .

@@ -1,0 +1,2 @@
+@prefix ex: <http://example.org/> .
+ex:acct2 a ex:Account ; ex:owner "alice" ; ex:balance "lots" .

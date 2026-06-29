@@ -1,0 +1,2 @@
+@prefix ex: <http://example.org/> .
+ex:acct1 a ex:Account ; ex:owner ex:alice ; ex:balance "100.50"^^<http://www.w3.org/2001/XMLSchema#decimal> .

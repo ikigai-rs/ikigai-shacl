@@ -1,0 +1,15 @@
+{
+  "conforms": false,
+  "violations": [
+    {
+      "focus_node": "http://example.org/acct2",
+      "path": "http://example.org/balance",
+      "component": "http://www.w3.org/ns/shacl#DatatypeConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/acct2",
+      "path": "http://example.org/owner",
+      "component": "http://www.w3.org/ns/shacl#NodeKindConstraintComponent"
+    }
+  ]
+}

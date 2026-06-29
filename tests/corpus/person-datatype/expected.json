@@ -1,0 +1,10 @@
+{
+  "conforms": false,
+  "violations": [
+    {
+      "focus_node": "http://example.org/carol",
+      "path": "http://example.org/name",
+      "component": "http://www.w3.org/ns/shacl#DatatypeConstraintComponent"
+    }
+  ]
+}

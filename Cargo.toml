@@ -1,0 +1,58 @@
+[package]
+name = "ikigai-shacl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Brian Sletten <brian.sletten@gmail.com>"]
+description = "SHACL validation for ikigai — urn:shacl:validate validates an RDF data graph against a shapes graph (rudof's shacl crate); the validation report is itself an RDF graph. Standalone, lazy-loadable as a WASM module."
+repository = "https://github.com/ikigai-rs/ikigai-shacl"
+homepage = "https://github.com/ikigai-rs/ikigai-shacl"
+keywords = ["ikigai", "roc", "shacl", "rdf", "validation"]
+categories = ["web-programming"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ikigai-core = "0.1.26"
+# rudof's consolidated SHACL crate (NOT the split shacl_validation/shacl_ast, which are
+# mid-rename and don't compose). Builds native + wasm32; in-memory (no rocksdb).
+shacl = "0.3"
+sparql_service = "0.3"  # RdfData — the in-memory RDF data graph
+rudof_rdf = "0.3"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+futures = "0.3"
+
+# The `module` feature turns this library into a standalone lazy-loadable WASM module via
+# `ikigai_module::wasm_module!` — a host fetches `ikigai_shacl.wasm` and resolves
+# `urn:shacl:*` against it, keeping the heavy rudof tree out of the host's wasm.
+[dependencies.ikigai-module]
+version = "0.1.6"
+optional = true
+[dependencies.wasm-bindgen]
+version = "=0.2.108"
+optional = true
+[dependencies.wasm-bindgen-futures]
+version = "0.4"
+optional = true
+[dependencies.js-sys]
+version = "0.3"
+optional = true
+[dependencies.console_error_panic_hook]
+version = "0.1"
+optional = true
+
+[features]
+# cargo build --release --lib --features module --target wasm32-unknown-unknown
+module = [
+    "dep:ikigai-module",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:console_error_panic_hook",
+]
+
+[dev-dependencies]
+futures = "0.3"
