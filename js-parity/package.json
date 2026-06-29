@@ -1,0 +1,18 @@
+{
+  "name": "js-parity",
+  "version": "1.0.0",
+  "description": "Cross-impl SHACL parity: shacl-engine (browser) vs the rudof corpus",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@rdfjs/parser-n3": "^2.1.0",
+    "rdf-ext": "^2.6.0",
+    "shacl-engine": "^1.1.1"
+  }
+}
