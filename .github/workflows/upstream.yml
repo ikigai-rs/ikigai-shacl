@@ -32,6 +32,20 @@
 #     in any other dependency is caught only once it is inside our declared bounds.
 #   - Nothing here proves the *published* ikigai-shacl builds; it proves this tree's
 #     requirements do. Those diverge the moment Cargo.toml changes without a release.
+#
+# HOW THIS DIVIDES WITH THE ECOSYSTEM CLOCK. ikigai-devtools carries an
+# `ecosystem-drift` workflow that scans every sibling and fresh-builds the exposed
+# ones on a weekly cron. It lives there for a good reason: that repo is never inactive
+# (every dispatch writes claims.json), so its cron cannot be auto-disabled the way this
+# one can. Treat it as the reliable clock and this file as the repo-local supplement:
+#   - `fresh-resolve` here overlaps it, and is kept only for the immediate `push: main`
+#     signal — the ecosystem build runs weekly, so its detection latency is up to 7 days.
+#   - `upstream-latest` does NOT overlap it and cannot be moved there. A scanner that
+#     compares a caret against the registry has nothing to say about a dependency that
+#     is already deliberately bounded; the question a bounded pin needs answered is the
+#     opposite one — "upstream has moved past our ceiling, does it still compile?" —
+#     and answering it means building against a version our own manifest forbids.
+#     That only makes sense in the repo that owns the call site.
 name: Upstream watch
 
 on:
