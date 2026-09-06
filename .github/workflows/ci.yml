@@ -1,3 +1,8 @@
+# What this workflow does NOT cover: it only runs when something happens. Cargo.lock
+# is not committed here, so this DOES resolve fresh — but an upstream release that
+# breaks the build lands on a day nobody pushes, and CI stays silent (that is exactly
+# how shacl 0.3.17 broke the published crate for two days). The clock is in
+# .github/workflows/upstream.yml, which is scheduled and deliberately allowed to go red.
 name: CI
 
 on:

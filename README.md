@@ -15,6 +15,20 @@ browser the same `urn:shacl:validate` resource is served by the JavaScript
 [`shacl-engine`](https://www.npmjs.com/package/shacl-engine) — one resource, an implementation
 per runtime.
 
+## Dependency pins
+
+The rudof crates are pinned with a **real upper bound** (`>=0.3.17, <0.3.19`), not a
+caret. That is deliberate and it is not tidiness: rudof's 0.3 line makes breaking API
+changes inside *patch* releases — 0.3.17 added a third argument to
+`ShaclProcessor::validate` — and under Cargo's 0.x rules `^0.3.8` already means
+`>=0.3.8, <0.4.0`, so a caret cannot exclude one. `ikigai-shacl` 0.1.0 shipped
+`shacl = "0.3"` and stopped compiling for every consumer the day 0.3.17 landed. Nothing
+flagged it: this repo does not commit `Cargo.lock`, so CI *would* have caught it — but CI
+had not run in 67 days.
+
+Raising the bound is a deliberate act. `.github/workflows/upstream.yml` runs daily
+against the newest published rudof and says whether it is safe yet.
+
 ## Parity
 
 Both implementations are held to a single shared corpus:
