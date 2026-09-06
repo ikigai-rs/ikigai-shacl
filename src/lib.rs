@@ -10,9 +10,11 @@
 //! you point at, sourced through the kernel — cacheable, golden-threaded); inline Turtle is
 //! also accepted. So the endpoint is `async` (the one await is the shapes resolution).
 //!
-//! Heavy dependency tree (the rudof stack), so this is a standalone crate meant to be
-//! lazy-loaded as a WASM module — the ikigai-xslt/jsonld playbook — keeping it out of the
-//! host's core wasm bundle.
+//! Heavy dependency tree (the rudof stack), so this is a standalone crate rather than
+//! something the host links unconditionally. It is **native-linked**: rudof gates
+//! `shacl::validator` off wasm, so the `module` (lazy-loadable WASM) face does not build —
+//! in the browser the same `urn:shacl:validate` resource is served by the JavaScript
+//! `shacl-engine`, held to the same parity corpus (see `js-parity/`).
 
 #![forbid(unsafe_code)]
 
@@ -27,7 +29,7 @@ use shacl::ir::IRSchema;
 use shacl::rdf::ShaclParser;
 use shacl::validator::processor::{DataValidation, ShaclProcessor};
 use shacl::validator::report::ValidationReport;
-use shacl::validator::ShaclValidationMode;
+use shacl::validator::{ShaclConfig, ShaclValidationMode};
 use sparql_service::RdfData;
 
 /// The space binding `urn:shacl:validate`.
@@ -137,8 +139,12 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
     let schema = compile_shapes(shapes_ttl)?;
     let data = parse_data(data_ttl, "data")?;
     let mut validator: DataValidation = data.into();
+    // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see the
+    // upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior: violations kept,
+    // conformance evidence off, cautious/LFP recursion semantics.
+    let config = ShaclConfig::default();
     validator
-        .validate(&schema, &ShaclValidationMode::Native)
+        .validate(&schema, &ShaclValidationMode::Native, &config)
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
 }
 

@@ -1,10 +1,10 @@
 [package]
 name = "ikigai-shacl"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
-description = "SHACL validation for ikigai — urn:shacl:validate validates an RDF data graph against a shapes graph (rudof's shacl crate); the validation report is itself an RDF graph. Standalone, lazy-loadable as a WASM module."
+description = "SHACL validation for ikigai — urn:shacl:validate validates an RDF data graph against a shapes graph (rudof's shacl crate); the validation report is itself an RDF graph. Native-linked: rudof gates its validator off wasm, and the browser is served by shacl-engine against the same parity corpus."
 repository = "https://github.com/ikigai-rs/ikigai-shacl"
 homepage = "https://github.com/ikigai-rs/ikigai-shacl"
 keywords = ["ikigai", "roc", "shacl", "rdf", "validation"]
@@ -16,18 +16,35 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ikigai-core = "0.1.26"
 # rudof's consolidated SHACL crate (NOT the split shacl_validation/shacl_ast, which are
-# mid-rename and don't compose). Builds native + wasm32; in-memory (no rocksdb).
-shacl = "0.3"
-sparql_service = "0.3"  # RdfData — the in-memory RDF data graph
-rudof_rdf = "0.3"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
+# mid-rename and don't compose). In-memory (no rocksdb).
+#
+# ⚠ THE UPPER BOUNDS ARE LOAD-BEARING, AND A CARET CANNOT REPLACE THEM. The rudof 0.3
+# line makes BREAKING API changes inside PATCH releases: 0.3.17 added a third argument
+# (`config: &ShaclConfig`) to `ShaclProcessor::validate`. Under Cargo's 0.x rules
+# `^0.3.8` already means `>=0.3.8, <0.4.0`, so `shacl = "0.3"` admitted that break and
+# ikigai-shacl 0.1.0 as published stopped compiling for anyone resolving fresh. Only a
+# real upper bound excludes an untested patch release. (Nothing here caught it: CI had
+# not run in 67 days. .github/workflows/upstream.yml is the clock that fixes that.)
+#
+# shacl 0.3.18 requires its own siblings at `^0.3.18`, so all three move in lockstep;
+# keep the three ranges identical. Raising them is a deliberate act, not a chore: the
+# `upstream-latest` job in .github/workflows/upstream.yml is what says whether the
+# next release still compiles against this call site.
+shacl = ">=0.3.17, <0.3.19"
+sparql_service = ">=0.3.17, <0.3.19"  # RdfData — the in-memory RDF data graph
+rudof_rdf = ">=0.3.17, <0.3.19"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 futures = "0.3"
 
-# The `module` feature turns this library into a standalone lazy-loadable WASM module via
-# `ikigai_module::wasm_module!` — a host fetches `ikigai_shacl.wasm` and resolves
-# `urn:shacl:*` against it, keeping the heavy rudof tree out of the host's wasm.
+# The `module` feature would turn this library into a standalone lazy-loadable WASM module via
+# `ikigai_module::wasm_module!`. ⚠ IT DOES NOT BUILD TODAY, AND NEVER HAS: rudof gates
+# `shacl::validator` (and `sparql_service::RdfData`) behind `cfg(not(target_family = "wasm"))`,
+# so `--features module --target wasm32-unknown-unknown` fails to resolve the imports this
+# crate is built on. That is why there is no wasm job in CI — a gate here could only be a
+# gate that fails. The browser story is `js-parity/` instead: shacl-engine held to the same
+# corpus. Kept, unbuilt, only until upstream un-gates the validator on wasm.
 [dependencies.ikigai-module]
 version = "0.1.6"
 optional = true
