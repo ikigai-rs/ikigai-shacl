@@ -1,41 +1,13 @@
-# What this workflow does NOT cover: it only runs when something happens. Cargo.lock
-# is not committed here, so this DOES resolve fresh — but an upstream release that
-# breaks the build lands on a day nobody pushes, and CI stays silent (that is exactly
-# how shacl 0.3.17 broke the published crate for two days). The clock is in
-# .github/workflows/upstream.yml, which is scheduled and deliberately allowed to go red.
-name: CI
-
+name: ci
 on:
-  push:
-    branches: [main]
+  push: { branches: [main] }
   pull_request:
-
-permissions:
-  contents: read
-
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # never cancel main
 jobs:
-  rust:
-    name: fmt · clippy · test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Test (native rudof + parity corpus)
-        run: cargo test
+  ci:
+    uses: ikigai-rs/.github/.github/workflows/rust.yml@main
 
   # The other half of the parity contract: shacl-engine (the browser validator) must produce
   # the same outcome as rudof for every case in tests/corpus/ — both assert the same
