@@ -83,4 +83,4 @@ futures = "0.3"
 # `ikigai-core >= 0.1.67`, and cargo unifies core across the graph, so the DEV build
 # always links 0.1.67+ — the declared 0.1.34 floor above is the library's true
 # minimum API and is never exercised here. (conformance PENDING #126/#137/#144.)
-ikigai-conformance = "0.1.0"
+ikigai-conformance = "0.2.0"
