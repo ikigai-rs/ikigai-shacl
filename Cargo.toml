@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-shacl"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -14,7 +14,11 @@ categories = ["web-programming"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ikigai-core = "0.1.26"
+# 0.1.34 is the floor this crate's manifold needs: `ArgSpec::one_of` and
+# `ArgSpec::default_value` landed there (core #55, "ActionSpec: the (endpoint, verb)
+# pair becomes the unit of selection"), and `as` declares both. `ArgSpec::class`
+# predates it (0.1.32) and `ContentId::of` is older still (<= 0.1.21).
+ikigai-core = "0.1.34"
 # rudof's consolidated SHACL crate (NOT the split shacl_validation/shacl_ast, which are
 # mid-rename and don't compose). In-memory (no rocksdb).
 #
@@ -24,12 +28,14 @@ ikigai-core = "0.1.26"
 # `^0.3.8` already means `>=0.3.8, <0.4.0`, so `shacl = "0.3"` admitted that break and
 # ikigai-shacl 0.1.0 as published stopped compiling for anyone resolving fresh. Only a
 # real upper bound excludes an untested patch release. (Nothing here caught it: CI had
-# not run in 67 days. .github/workflows/upstream.yml is the clock that fixes that.)
+# not run in 67 days. The clock that fixes that is `upstream-watch.yml` in
+# ikigai-devtools — the one repo whose cron GitHub cannot auto-disable for inactivity,
+# because every dispatch writes to it. It clones this repo and runs the same steps.)
 #
 # shacl 0.3.18 requires its own siblings at `^0.3.18`, so all three move in lockstep;
 # keep the three ranges identical. Raising them is a deliberate act, not a chore: the
-# `upstream-latest` job in .github/workflows/upstream.yml is what says whether the
-# next release still compiles against this call site.
+# `upstream-latest` job in ikigai-devtools' `.github/workflows/upstream-watch.yml` is
+# what says whether the next release still compiles against this call site.
 shacl = ">=0.3.17, <0.3.19"
 sparql_service = ">=0.3.17, <0.3.19"  # RdfData — the in-memory RDF data graph
 rudof_rdf = ">=0.3.17, <0.3.19"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
@@ -73,3 +79,8 @@ module = [
 
 [dev-dependencies]
 futures = "0.3"
+# The module recipe as one test (tests/conformance.rs). ⚠ It requires
+# `ikigai-core >= 0.1.67`, and cargo unifies core across the graph, so the DEV build
+# always links 0.1.67+ — the declared 0.1.34 floor above is the library's true
+# minimum API and is never exercised here. (conformance PENDING #126/#137/#144.)
+ikigai-conformance = "0.1.0"
