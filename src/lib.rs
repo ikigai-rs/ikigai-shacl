@@ -3,7 +3,9 @@
 //! `urn:shacl:validate` validates a piped RDF `data` graph against a SHACL `shapes` graph,
 //! via rudof's consolidated [`shacl`] crate (in-memory, no rocksdb). The validation **report
 //! is itself an RDF graph**: the default `text/turtle` output is the SHACL ValidationReport
-//! (conforms + a node per violation), and `application/json` gives a structured
+//! (conforms + a node per violation), skolemized under a content address of the report so it
+//! carries no blank node (every one is named under [`REPORT_SCHEME`]), and `application/json`
+//! gives a structured
 //! [`Report`] — `{conforms, violations: [{focus_node, path, component, message, value}]}` —
 //! content-negotiated structured errors for free. Both faces carry the same facts: the
 //! `sh:resultMessage` with its `{?value}`-style template resolved, the offending `sh:value`,
@@ -23,12 +25,12 @@
 
 use async_trait::async_trait;
 use ikigai_core::{
-    ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, Invocation, Iri, ReprType,
-    Representation, Request, Result, Verb,
+    ArgRef, ArgSpec, ContentId, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
+    Iri, ReprType, Representation, Request, Result, Verb,
 };
 use rudof_rdf::rdf_core::term::literal::ConcreteLiteral;
-use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object};
-use rudof_rdf::rdf_core::{BuildRDF, RDFFormat};
+use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object, Triple as RdfTriple};
+use rudof_rdf::rdf_core::{BuildRDF, NeighsRDF, RDFFormat, Rdf};
 use rudof_rdf::rdf_impl::{OxigraphInMemory, ReaderMode};
 use shacl::ir::IRSchema;
 use shacl::rdf::ShaclParser;
@@ -165,6 +167,11 @@ impl Term {
 }
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+
+/// The two faces of the report, which are also the two values `as` accepts and the
+/// two declared outputs — one list, so `as`'s `one_of` and `outputs` cannot drift.
+const TURTLE: &str = "text/turtle";
+const JSON: &str = "application/json";
 
 /// rudof's `Object` → [`Term`]. Matched by variant rather than `Display`ed: `Object`'s
 /// `Display` is `todo!()` for quoted triples, and a report face must not panic on data.
@@ -429,23 +436,170 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
 /// both faces.
 fn validate(data_ttl: &str, shapes_ttl: &str, as_type: &str) -> Result<Representation> {
     let report = resolve_messages(run(data_ttl, shapes_ttl)?);
-    if as_type.split(';').next().unwrap_or("").trim() == "application/json" {
+    if as_type.split(';').next().unwrap_or("").trim() == JSON {
         Ok(repr(
-            "application/json",
+            JSON,
             serde_json::to_string_pretty(&Report::from_report(&report))
                 .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: json error: {e}")))?,
         ))
     } else {
-        Ok(repr("text/turtle", report_turtle(&report)?))
+        Ok(repr(TURTLE, report_turtle(&report)?))
     }
 }
 
-/// Serialize the SHACL ValidationReport as a Turtle graph (the report *is* RDF).
-fn report_turtle(report: &ValidationReport) -> Result<String> {
+/// The prefix every node of the report graph is named under:
+/// `urn:ikigai:shacl:report:<content id of the report graph>:<blank-node label>`. A
+/// consumer can recognize a node this crate minted by this prefix, and nothing else in
+/// a report carries it.
+pub const REPORT_SCHEME: &str = "urn:ikigai:shacl:report:";
+
+/// Percent-encode a blank-node label down to the URN-safe set. RDF 1.1 admits `:`,
+/// `.` and non-ASCII in a label; this crate's minted IRIs stay in
+/// `[A-Za-z0-9._-]` so a consumer can split the scheme from the label on `:`.
+fn encode_label(label: &str) -> String {
+    label
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// An [`IriOrBlankNode`] as the [`Object`] carrying the same term — so subjects and
+/// objects go through one rewrite and one canonical rendering.
+fn subject_object(subject: &IriOrBlankNode) -> Object {
+    match subject {
+        IriOrBlankNode::Iri(iri) => Object::iri(iri.clone()),
+        IriOrBlankNode::BlankNode(label) => Object::bnode(label.clone()),
+    }
+}
+
+/// One triple as a canonical, escaping-safe line: the JSON encoding of its three
+/// terms. Used only to content-address the graph, so what matters is that equal
+/// graphs render equally and unequal ones do not — [`Term`]'s field order is fixed
+/// by its `serde` derive and its `Display`-free rendering never panics (see
+/// [`term`]).
+fn canonical_line(subject: &Object, predicate: &str, object: &Object) -> String {
+    serde_json::to_string(&(term(subject), predicate, term(object)))
+        .expect("a Term is always serializable")
+}
+
+/// Replace every blank node in `object` with its skolem IRI under `scheme`.
+fn skolemize_object(object: Object, scheme: &str) -> Result<Object> {
+    match object {
+        Object::BlankNode(label) => skolem_iri(scheme, &label),
+        Object::Triple {
+            subject,
+            predicate,
+            object,
+        } => {
+            // An RDF-star quoted triple: its subject may be a blank node too.
+            let subject = match skolemize_object(subject_object(&subject), scheme)? {
+                Object::Iri(iri) => IriOrBlankNode::Iri(iri),
+                other => {
+                    return Err(Error::Endpoint(format!(
+                        "urn:shacl:validate: quoted-triple subject is not a node: {other}"
+                    )))
+                }
+            };
+            Ok(Object::Triple {
+                subject: Box::new(subject),
+                predicate,
+                object: Box::new(skolemize_object(*object, scheme)?),
+            })
+        }
+        iri_or_literal => Ok(iri_or_literal),
+    }
+}
+
+/// The skolem IRI for one blank-node label — **parsed**, not merely formatted, so a
+/// label this crate failed to encode is an error rather than a malformed graph.
+fn skolem_iri(scheme: &str, label: &str) -> Result<Object> {
+    let iri = format!("{scheme}{}", encode_label(label));
+    let parsed = Object::parse(&iri, None)
+        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: bad skolem IRI `{iri}`: {e}")))?;
+    match parsed {
+        Object::Iri(_) => Ok(parsed),
+        _ => Err(Error::Endpoint(format!(
+            "urn:shacl:validate: skolem IRI `{iri}` did not parse as an IRI"
+        ))),
+    }
+}
+
+/// Give every blank node in the report graph a stable IRI — the recipe's
+/// "skolemize; no blank nodes", which is what makes a report diffable, unionable
+/// and SPARQL-able instead of isomorphism-compared.
+///
+/// rudof's `to_rdf` mints a blank node for the report, one per result, and passes
+/// through whatever the shapes graph gave it (`sh:sourceShape`, and the RDF-list
+/// structure of a complex `sh:path`). Each becomes
+///
+/// ```text
+/// urn:ikigai:shacl:report:<content-id of the whole report graph>:<blank-node label>
+/// ```
+///
+/// **What that buys and what it costs, stated because the code cannot.** The
+/// content address makes the name a pure function of the report, so two runs over
+/// the same data and shapes mint the same IRIs and two different reports can never
+/// collide — which is the failure a bare `_:1`-style counter has. The cost is the
+/// other direction: a report that differs *anywhere* is a different content id, so
+/// every node in it is renamed. Nodes are aligned across reports by their content
+/// (`sh:focusNode`, `sh:resultPath`, `sh:sourceConstraintComponent`, `sh:value`),
+/// not by their IRI — the `application/json` face's sorted [`Report`] is the
+/// aligned view.
+///
+/// The label after the content id is the source graph's, which is only ever unique
+/// *within* one document — that is exactly the scope the content id supplies.
+fn skolemize(graph: &OxigraphInMemory) -> Result<OxigraphInMemory> {
+    type Sub = <OxigraphInMemory as Rdf>::Subject;
+    type Pred = <OxigraphInMemory as Rdf>::IRI;
+
+    let bad = |e: String| Error::Endpoint(format!("urn:shacl:validate: report graph: {e}"));
+    let mut triples: Vec<(Object, Pred, Object)> = Vec::new();
+    for triple in graph.triples().map_err(|e| bad(e.to_string()))? {
+        let (subject, predicate, object) = triple.into_components();
+        // Infallible for this store (an RDF subject IS an IRI or a blank node), which is
+        // why this one is `into` and the object below is not: a term may also be a
+        // literal, and the trait bound is only `TryInto`.
+        let subject: IriOrBlankNode = subject.into();
+        let object: Object = object
+            .try_into()
+            .map_err(|_| bad("an object is not an RDF term".to_string()))?;
+        triples.push((subject_object(&subject), predicate, object));
+    }
+
+    // The content address of the graph: canonical lines, sorted, so it does not
+    // depend on the store's iteration order.
+    let mut lines: Vec<String> = triples
+        .iter()
+        .map(|(s, p, o)| canonical_line(s, p.as_str(), o))
+        .collect();
+    lines.sort();
+    let scheme = format!(
+        "{REPORT_SCHEME}{}:",
+        ContentId::of(lines.join("\n").as_bytes())
+    );
+
     let mut out = OxigraphInMemory::empty();
+    out.set_prefix_map(graph.prefixmap().clone());
+    for (subject, predicate, object) in triples {
+        let subject = Sub::try_from(skolemize_object(subject, &scheme)?)
+            .map_err(|_| bad("a skolemized subject is not a subject".to_string()))?;
+        out.add_triple(subject, predicate, skolemize_object(object, &scheme)?)
+            .map_err(|e| bad(e.to_string()))?;
+    }
+    Ok(out)
+}
+
+/// Serialize the SHACL ValidationReport as a Turtle graph (the report *is* RDF),
+/// skolemized: see [`skolemize`] for the IRI every node is minted under.
+fn report_turtle(report: &ValidationReport) -> Result<String> {
+    let mut graph = OxigraphInMemory::empty();
     report
-        .to_rdf(&mut out)
+        .to_rdf(&mut graph)
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report to RDF error: {e}")))?;
+    let out = skolemize(&graph)?;
     let mut buf = Vec::new();
     out.serialize(&RDFFormat::Turtle, &mut buf)
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report serialize error: {e}")))?;
@@ -485,7 +639,7 @@ impl Endpoint for ValidateEndpoint {
                     .to_string(),
             )
         })?;
-        let as_type = inv.inline_str("as").unwrap_or("text/turtle").to_string();
+        let as_type = inv.inline_str("as").unwrap_or(TURTLE).to_string();
 
         // Inline Turtle used directly; anything else is a resource reference resolved through
         // the kernel (the one await — no rudof value is live across it).
@@ -515,14 +669,43 @@ impl Endpoint for ValidateEndpoint {
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("data").summary("the RDF data graph to validate — usually piped in"))
-            .input(ArgSpec::new("shapes").summary(
-                "the SHACL shapes graph: inline Turtle or a resolvable resource IRI",
-            ))
-            .input(ArgSpec::new("as").summary(
-                "report representation: text/turtle (default, the report graph) or application/json",
-            ))
+            // ⚠ All three inputs are `xsd:string`, and for two of them that is the type
+            // of the WIRE, not of the value. `data` and `shapes` are RDF *documents*;
+            // `shapes` is additionally a union (inline Turtle OR a resource IRI, told
+            // apart by `is_inline_shapes`). An `ArgSpec` has `class`, `one_of` and
+            // `default` and no `example`, `pattern` or `any_of`, so the only class that
+            // is TRUE of every accepted value is the string the wire carries. Reported
+            // for ikigai-core (conformance PENDING #7/#25).
+            .input(
+                ArgSpec::new("data")
+                    .summary(
+                        "the RDF data graph to validate, as Turtle — piped in: with `shapes` \
+                         named it is the sole unnamed required input, which is where the engine \
+                         routes a piped value",
+                    )
+                    .class(XSD_STRING),
+            )
+            .input(
+                ArgSpec::new("shapes")
+                    .summary(
+                        "the SHACL shapes graph: inline Turtle, or a resolvable resource IRI \
+                         sourced through the kernel (the report is then as cacheable as it is)",
+                    )
+                    .class(XSD_STRING),
+            )
+            .input(
+                ArgSpec::new("as")
+                    .summary(
+                        "report representation: text/turtle (default, the report graph) or \
+                         application/json",
+                    )
+                    .class(XSD_STRING)
+                    .one_of([TURTLE, JSON])
+                    .default_value(TURTLE)
+                    .optional(),
+            )
             .output("text/turtle;charset=utf-8")
+            .output("application/json;charset=utf-8")
     }
 }
 
