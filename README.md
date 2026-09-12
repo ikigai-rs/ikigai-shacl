@@ -7,7 +7,7 @@ SHACL validation as an [ikigai](https://github.com/ikigai-rs) resource.
 itself an RDF graph**:
 
 - `as=text/turtle` (default) → the SHACL `ValidationReport` graph (`report.to_rdf`).
-- `as=application/json` → a structured `ValidationOutcome { conforms, violations: [{ focus_node, path, component }] }`.
+- `as=application/json` → a structured `Report { conforms, violations: [{ focus_node, path, component, message, value }] }` — `message` is the `sh:resultMessage` with its `{?value}` template resolved (language-tagged when the shape's is), `value` the offending `sh:value`; both are terms in the SPARQL-results JSON encoding (`{type, value, datatype?, "xml:lang"?}`). The Turtle face carries the same triples.
 
 Built on rudof's [`shacl`](https://crates.io/crates/shacl) crate. The `shacl::validator` is
 native-only (gated off wasm), so this crate is **native-linked** (CLI + servers); in the
