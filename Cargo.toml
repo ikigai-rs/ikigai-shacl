@@ -52,14 +52,26 @@ async-trait = "0.1"
 futures = "0.3"
 
 # The `module` feature would turn this library into a standalone lazy-loadable WASM module via
-# `ikigai_module::wasm_module!`. ⚠ IT DOES NOT BUILD TODAY, AND NEVER HAS: rudof gates
-# `shacl::validator` (and `sparql_service::RdfData`) behind `cfg(not(target_family = "wasm"))`,
-# so `--features module --target wasm32-unknown-unknown` fails to resolve the imports this
-# crate is built on. That is why there is no wasm job in CI — a gate here could only be a
-# gate that fails. The browser story is `js-parity/` instead: shacl-engine held to the same
-# corpus. Kept, unbuilt, only until upstream un-gates the validator on wasm.
+# `ikigai_module::wasm_module!`. Two different things are true of it, and only one is gated:
+#
+# - NATIVE `--features module` builds, and CI's `features: module` job lints and tests it, so
+#   the dependency below cannot rot unseen again. (It did: the old `0.1.6` pin resolved to
+#   0.1.10, which builds core's `Resolved` by struct literal and has not compiled against a
+#   fresh core since 0.1.78. Nothing noticed, because no job enabled the feature.)
+# - ⚠ The WASM build, the one the feature exists for, DOES NOT BUILD WITHIN THE RUDOF BOUNDS
+#   ABOVE, AND NEVER HAS: rudof 0.3.18 gates `shacl::validator` (and `sparql_service::RdfData`)
+#   behind `cfg(not(target_family = "wasm"))`, so `--features module --target
+#   wasm32-unknown-unknown` fails to resolve the imports this crate is built on. That is why
+#   there is no `wasm-lib` input in CI: a gate there could only be a gate that fails. Later
+#   rudof releases restructure that gating (ledger #206); taking them is a rudof upgrade, not
+#   this pin. The browser story meanwhile is `js-parity/`: shacl-engine held to the same corpus.
 [dependencies.ikigai-module]
-version = "0.1.6"
+# 0.3.1 is the floor that builds against ikigai-core >= 0.1.78 (`Resolved` gained a private
+# field, so it can only be built through `Resolved::new`): 0.1.10, 0.2.0 and 0.3.0 all build it
+# by struct literal, and a fresh resolve (newest core under the caret above) fails to compile
+# them. ⚠ A `^0.3.1` pin is also a CEILING (<0.4.0). The library uses only `wasm_module!`,
+# which is unchanged across 0.1 → 0.3 (no `ModuleSpace`, so no `ModuleFloor` to choose).
+version = "0.3.1"
 optional = true
 [dependencies.wasm-bindgen]
 version = "=0.2.108"
