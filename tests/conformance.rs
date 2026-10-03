@@ -8,8 +8,10 @@
 //! truths from one body of code (conformance PENDING #18/#30/#47/#109):
 //!
 //! - **Inline** ([`inline`]): validation is a pure function of two by-value
-//!   documents. Nothing is read but the arguments, so the result rightly carries
-//!   an empty golden-thread set. Declared `pure` + `cacheable`.
+//!   documents. Nothing is read but the arguments, so the result carries no
+//!   golden thread but its own name (since core 0.1.73 the kernel hangs every
+//!   cacheable answer on its own canonical target; before that, none at all).
+//!   Declared `pure` + `cacheable`.
 //! - **By reference** ([`referenced`]): `inv.source` folds the shapes resource's
 //!   expiry and threads into the result, so the report is exactly as cacheable as
 //!   the shapes graph and never more — a cut of the shapes' thread recomputes it.
@@ -41,6 +43,7 @@
 //! well-known, so this module invents no term and needs nothing from the
 //! vocabulary. NAMES runs — `shacl-validate` is already kebab-case.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ikigai_conformance::{rdf, Fixture, Suite};
@@ -179,9 +182,16 @@ fn referenced() {
 }
 
 /// The declarations above are a claim about golden threads; this is the claim.
-/// Inline, the report depends on nothing. By reference, it inherits the shapes
-/// resource's thread — so cutting it recomputes the report, which is the whole
-/// reason a shapes graph is taken by reference.
+/// Inline, the report depends on nothing: it carries no thread but its own name.
+/// By reference, it inherits the shapes resource's threads — so cutting the
+/// shapes thread recomputes the report, which is the whole reason a shapes graph
+/// is taken by reference.
+///
+/// "Its own name" is [`IRI`]: since core 0.1.73 the kernel hangs every cacheable
+/// answer on its own canonical target's thread, so a pure answer is no longer
+/// thread-FREE, only free of FOREIGN threads. Both halves are written to hold on
+/// either side of that change (the dev graph links core 0.1.67+), so neither
+/// spells purity as an empty set nor hard-codes whether own names are present.
 #[test]
 fn the_two_shapes_forms_have_two_different_thread_sets() {
     let inline = resolve(
@@ -189,19 +199,35 @@ fn the_two_shapes_forms_have_two_different_thread_sets() {
         source(&[("data", DATA), ("shapes", SHAPES)]),
     );
     assert!(
-        inline.threads().is_empty(),
-        "inline shapes read nothing: {:?}",
+        inline.threads().iter().all(|t| t.as_str() == IRI),
+        "inline shapes read nothing, so the report carries only its own thread: {:?}",
         inline.threads()
     );
 
     let kernel = referenced_kernel();
     let request = source(&[("data", DATA), ("shapes", SHAPES_IRI)]);
     let referenced = resolve(&kernel, request.clone());
-    let threads: Vec<&str> = referenced.threads().iter().map(|t| t.as_str()).collect();
+    let inherited: BTreeSet<&str> = referenced
+        .threads()
+        .iter()
+        .map(|t| t.as_str())
+        .filter(|t| *t != IRI)
+        .collect();
+    // What the shapes resource itself carries, asked of the kernel rather than
+    // spelled out: its declared thread, plus its own name on core >= 0.1.73.
+    let shapes = futures::executor::block_on(kernel.issue(
+        Request::new(Verb::Source, Iri::parse(SHAPES_IRI).expect("a valid IRI")),
+        &Capability::root(),
+    ))
+    .expect("the shapes resource resolves");
+    let carried: BTreeSet<&str> = shapes.threads().iter().map(|t| t.as_str()).collect();
+    assert!(
+        carried.contains(SHAPES_THREAD),
+        "the fixture declares its thread: {carried:?}"
+    );
     assert_eq!(
-        threads,
-        [SHAPES_THREAD],
-        "the report inherits the shapes resource's thread"
+        inherited, carried,
+        "beyond its own name, the report carries exactly the shapes resource's threads"
     );
 
     // And the thread is live: the kernel serves the report from cache until it is cut.
