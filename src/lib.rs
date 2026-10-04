@@ -16,10 +16,11 @@
 //! also accepted. So the endpoint is `async` (the one await is the shapes resolution).
 //!
 //! Heavy dependency tree (the rudof stack), so this is a standalone crate rather than
-//! something the host links unconditionally. It is **native-linked**: rudof gates
-//! `shacl::validator` off wasm, so the `module` (lazy-loadable WASM) face does not build —
-//! in the browser the same `urn:shacl:validate` resource is served by the JavaScript
-//! `shacl-engine`, held to the same parity corpus (see `js-parity/`).
+//! something the host links unconditionally. It links natively, and with the `module` feature
+//! it also builds as a lazy-loadable WASM module (rudof 0.3.22 removed the gate that kept
+//! `shacl::validator` off wasm). The JavaScript `shacl-engine` remains a second
+//! implementation of the same `urn:shacl:validate` resource, held to the same parity corpus
+//! (see `js-parity/`).
 
 #![forbid(unsafe_code)]
 

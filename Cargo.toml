@@ -4,7 +4,7 @@ version = "0.1.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
-description = "SHACL validation for ikigai — urn:shacl:validate validates an RDF data graph against a shapes graph (rudof's shacl crate); the validation report is itself an RDF graph. Native-linked: rudof gates its validator off wasm, and the browser is served by shacl-engine against the same parity corpus."
+description = "SHACL validation for ikigai — urn:shacl:validate validates an RDF data graph against a shapes graph (rudof's shacl crate); the validation report is itself an RDF graph. Native, or a lazy-loadable WASM module with the `module` feature; shacl-engine (JavaScript) is held to the same parity corpus."
 repository = "https://github.com/ikigai-rs/ikigai-shacl"
 homepage = "https://github.com/ikigai-rs/ikigai-shacl"
 keywords = ["ikigai", "roc", "shacl", "rdf", "validation"]
@@ -32,39 +32,47 @@ ikigai-core = "0.1.34"
 # ikigai-devtools — the one repo whose cron GitHub cannot auto-disable for inactivity,
 # because every dispatch writes to it. It clones this repo and runs the same steps.)
 #
-# shacl 0.3.18 requires its own siblings at `^0.3.18`, so all three move in lockstep;
-# keep the three ranges identical. Raising them is a deliberate act, not a chore: the
-# `upstream-latest` job in ikigai-devtools' `.github/workflows/upstream-watch.yml` is
+# Each rudof crate requires its own siblings at `^<its own version>`, so all three move in
+# lockstep; keep the three ranges identical. Raising them is a deliberate act, not a chore:
+# the `upstream-latest` job in ikigai-devtools' `.github/workflows/upstream-watch.yml` is
 # what says whether the next release still compiles against this call site.
-shacl = ">=0.3.17, <0.3.19"
-sparql_service = ">=0.3.17, <0.3.19"  # RdfData — the in-memory RDF data graph
-rudof_rdf = ">=0.3.17, <0.3.19"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
-# Not used by this crate's code: a CONSTRAINT on a transitive dependency. rudof_rdf
-# 0.3.18 asks for `prefixmap = "^0.3.18"`, and prefixmap 0.3.22 (2026-09-27) removed
-# `PrefixMap::without_default_colors`, which rudof_rdf 0.3.18 calls — so every fresh
-# resolve inside the bounds above stopped compiling that day, with nothing of ours
-# changed. Same trap as the comment above, one crate further out. Raise it together
-# with the three rudof bounds, never alone.
-prefixmap = ">=0.3.17, <0.3.22"
+#
+# 0.3.22 is the FLOOR because it is the first release whose validator builds for wasm:
+# 0.3.18 gated `shacl::validator` (and `sparql_service::RdfData`) behind
+# `cfg(not(target_family = "wasm"))`, so the `module` feature below could not build for the
+# target it exists for. 0.3.22 removed that gate and moved `RdfData` / `DataValidation` behind
+# a default-on `sparql` feature, which the default features here keep on. The ceiling is the
+# newest release tested (0.3.24, 2026-10-04): both ends were resolved from scratch, built
+# native and wasm, and tested, with no change to this crate's code.
+#
+# There is no longer a direct `prefixmap` constraint. It existed because prefixmap 0.3.22
+# removed a method rudof_rdf 0.3.18 calls; rudof_rdf 0.3.22+ requires `prefixmap ^0.3.22`
+# itself, so the trap cannot be reached from inside these bounds. ⚠ The general trap is still
+# open one crate out: rudof's OTHER transitive crates resolve to the newest 0.3.x, so a sibling
+# release that breaks the rudof_rdf/shacl we bound to is a fresh-resolve break with nothing of
+# ours changed. The bounds stop a break in these three crates, not in theirs.
+shacl = ">=0.3.22, <0.3.25"
+sparql_service = ">=0.3.22, <0.3.25"  # RdfData — the in-memory RDF data graph
+rudof_rdf = ">=0.3.22, <0.3.25"       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 futures = "0.3"
 
-# The `module` feature would turn this library into a standalone lazy-loadable WASM module via
-# `ikigai_module::wasm_module!`. Two different things are true of it, and only one is gated:
+# The `module` feature turns this library into a standalone lazy-loadable WASM module via
+# `ikigai_module::wasm_module!`. CI checks it both ways, so neither half can rot unseen again:
 #
-# - NATIVE `--features module` builds, and CI's `features: module` job lints and tests it, so
-#   the dependency below cannot rot unseen again. (It did: the old `0.1.6` pin resolved to
-#   0.1.10, which builds core's `Resolved` by struct literal and has not compiled against a
-#   fresh core since 0.1.78. Nothing noticed, because no job enabled the feature.)
-# - ⚠ The WASM build, the one the feature exists for, DOES NOT BUILD WITHIN THE RUDOF BOUNDS
-#   ABOVE, AND NEVER HAS: rudof 0.3.18 gates `shacl::validator` (and `sparql_service::RdfData`)
-#   behind `cfg(not(target_family = "wasm"))`, so `--features module --target
-#   wasm32-unknown-unknown` fails to resolve the imports this crate is built on. That is why
-#   there is no `wasm-lib` input in CI: a gate there could only be a gate that fails. Later
-#   rudof releases restructure that gating (ledger #206); taking them is a rudof upgrade, not
-#   this pin. The browser story meanwhile is `js-parity/`: shacl-engine held to the same corpus.
+# - NATIVE `--features module`: CI's `features: module` input lints and tests it. (It rotted
+#   once: the old `0.1.6` pin resolved to 0.1.10, which builds core's `Resolved` by struct
+#   literal and has not compiled against a fresh core since 0.1.78. Nothing noticed, because
+#   no job enabled the feature.)
+# - WASM `--features module --target wasm32-unknown-unknown`: CI's `wasm-lib` input with
+#   `wasm-features: module` runs clippy there. This has compiled only since the rudof floor
+#   above moved to 0.3.22 (ledger #206); before that it failed to resolve the validator
+#   imports and never built. ⚠ Clippy is a type-check: it does not link the cdylib, and
+#   nothing here LOADS the module in a wasm runtime, so what the rudof stack does at runtime
+#   in a browser (rayon, getrandom, the `sparql` feature's reqwest/tokio) is untested until a
+#   host loads it.
 [dependencies.ikigai-module]
 # 0.3.1 is the floor that builds against ikigai-core >= 0.1.78 (`Resolved` gained a private
 # field, so it can only be built through `Resolved::new`): 0.1.10, 0.2.0 and 0.3.0 all build it

@@ -44,15 +44,22 @@ golden-thread set is correct); shapes by reference make the report exactly as ca
 as the shapes resource, inheriting its thread, so cutting that thread recomputes the
 report. Both walks are clean.
 
-Built on rudof's [`shacl`](https://crates.io/crates/shacl) crate. The `shacl::validator` is
-native-only (gated off wasm), so this crate is **native-linked** (CLI + servers); in the
-browser the same `urn:shacl:validate` resource is served by the JavaScript
-[`shacl-engine`](https://www.npmjs.com/package/shacl-engine) — one resource, an implementation
-per runtime.
+Built on rudof's [`shacl`](https://crates.io/crates/shacl) crate. It links natively (CLI +
+servers), and with the `module` feature it also builds as a lazy-loadable WASM module:
+
+```text
+cargo build --release --lib --features module --target wasm32-unknown-unknown
+```
+
+That build is possible since rudof 0.3.22, which removed the gate that kept
+`shacl::validator` off wasm. CI type-checks it on wasm32 on every change (clippy, which
+does not link); nothing here yet *loads* it in a browser or other wasm runtime. The JavaScript
+[`shacl-engine`](https://www.npmjs.com/package/shacl-engine) remains a second implementation
+of the same `urn:shacl:validate` resource, held to the same corpus (see Parity below).
 
 ## Dependency pins
 
-The rudof crates are pinned with a **real upper bound** (`>=0.3.17, <0.3.19`), not a
+The rudof crates are pinned with a **real upper bound** (`>=0.3.22, <0.3.25`), not a
 caret. That is deliberate and it is not tidiness: rudof's 0.3 line makes breaking API
 changes inside *patch* releases — 0.3.17 added a third argument to
 `ShaclProcessor::validate` — and under Cargo's 0.x rules `^0.3.8` already means
@@ -60,6 +67,11 @@ changes inside *patch* releases — 0.3.17 added a third argument to
 `shacl = "0.3"` and stopped compiling for every consumer the day 0.3.17 landed. Nothing
 flagged it: this repo does not commit `Cargo.lock`, so CI *would* have caught it — but CI
 had not run in 67 days.
+
+The floor, 0.3.22, is the first release whose validator builds for wasm (and whose
+`rudof_rdf` requires a `prefixmap` new enough that the direct constraint 0.1.3 carried is no
+longer needed). The ceiling is the newest release tested: both ends were resolved from
+scratch, built, and tested.
 
 Raising the bound is a deliberate act. The daily build against the newest published
 rudof — and the shacl-engine half of the parity contract against the newest npm — runs
