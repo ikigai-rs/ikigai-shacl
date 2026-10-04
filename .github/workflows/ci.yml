@@ -8,11 +8,14 @@ concurrency:
 jobs:
   ci:
     uses: ikigai-rs/.github/.github/workflows/rust.yml@main
-    # `module` NATIVELY only: its optional deps rotted unseen for weeks because no job enabled
-    # the feature (ledger #728). No `wasm-lib`/`wasm-features: module` — that build fails
-    # inside the current rudof bounds for an upstream reason; see the note in Cargo.toml.
+    # `module` both ways, tested natively and linted on wasm32: its optional deps rotted unseen
+    # for weeks because no job enabled the feature (ledger #728), and its WASM build, the one
+    # it exists for, has only been possible since the rudof floor moved to 0.3.22 (ledger
+    # #206; see the note in Cargo.toml).
     with:
       features: module
+      wasm-lib: true
+      wasm-features: module
 
   # The other half of the parity contract: shacl-engine (the browser validator) must produce
   # the same outcome as rudof for every case in tests/corpus/ — both assert the same
