@@ -42,6 +42,9 @@ use shacl::validator::report::{ValidationReport, ValidationResult};
 use shacl::validator::{ShaclConfig, ShaclValidationMode};
 use sparql_service::RdfData;
 
+mod depth;
+pub use depth::{MAX_SHAPE_DEPTH, MAX_TURTLE_NESTING};
+
 /// The name [`space`] claims: `urn:iki:space:shacl`.
 pub const SPACE_ID: &str = "urn:iki:space:shacl";
 
@@ -54,17 +57,22 @@ pub fn space() -> EndpointSpace {
         .named(space_iri("shacl"))
 }
 
-/// Parse a Turtle graph into rudof's in-memory `RdfData`.
+/// Parse a Turtle graph into rudof's in-memory `RdfData`, refusing first any triple-term
+/// nesting past [`MAX_TURTLE_NESTING`] (`role` is the argument the text arrived in).
 fn parse_data(ttl: &str, role: &str) -> Result<RdfData> {
+    depth::check_turtle_nesting(ttl, role)?;
     RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default())
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}")))
 }
 
 /// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema, refusing any
-/// SPARQL literal in it past the bounds before rudof sees the graph.
+/// SPARQL literal in it past the bounds, and any structure nested past [`MAX_SHAPE_DEPTH`],
+/// before rudof's parser sees the graph. Recursive in rudof even within the bounds (an RDF
+/// list is parsed one call per element), so [`run`] calls it on a sized stack.
 fn compile_shapes(ttl: &str) -> Result<IRSchema> {
-    let shapes = parse_data(ttl, "shapes")?;
+    let shapes = parse_data(ttl, SHAPES_ARG)?;
     bound_literals(&shapes)?;
+    depth::check_shapes_structure(&shapes)?;
     let ast = ShaclParser::new(shapes)
         .parse()
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes parse error: {e}")))?;
@@ -571,13 +579,20 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 }
 
 /// Run the validator: data graph + compiled shapes → rudof ValidationReport. Every query
-/// rudof will parse is bounded first, and the validation runs on a thread sized for the
-/// longest of them (see [`bound_queries`]); on wasm there is no thread and it runs inline.
+/// rudof will parse is bounded first (see [`bound_queries`]), and so is every depth the
+/// caller's Turtle can reach (see the `depth` module). Then both halves run on sized stacks,
+/// because LENGTH recurses too, and length is not refused: compiling on a thread sized from
+/// the shapes text (rudof parses an RDF list one call per element), and parsing the data and
+/// validating on one sized for the longest query. On wasm there is no thread and both run
+/// inline.
 fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
-    let schema = compile_shapes(shapes_ttl)?;
-    let longest = bound_queries(&schema)?;
-    let data = parse_data(data_ttl, "data")?;
+    let (schema, longest) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
+        let schema = compile_shapes(shapes_ttl)?;
+        let longest = bound_queries(&schema)?;
+        Ok((schema, longest))
+    })?;
     ikigai_store::limits::on_sparql_stack(&longest, move || {
+        let data = parse_data(data_ttl, "data")?;
         let mut validator: DataValidation = data.into();
         // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see
         // the upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior:
