@@ -75,17 +75,29 @@ aborts the whole process rather than failing one request: 300 nested parentheses
   because two of its pieces are in no literal: the shape's `sh:path`, written into `$PATH`,
   and the `sh:declare` prefix names, written into a `PREFIX` header unescaped;
 - validation runs on a thread sized for the longest of those queries (16 MiB plus 512 bytes
-  per byte of query), so a long flat chain the nesting bound does not refuse still fits. On
-  wasm there is no thread, and only the bound applies.
+  per byte of query), so a long flat chain the nesting bound does not refuse still fits. rudof
+  hands a level of two or more shapes to rayon, whose global pool has 2 MiB threads, so its
+  validator runs inside a one-thread pool of that same size: shapes are validated in sequence,
+  never on a 2 MiB worker (ledger #1102). On wasm there is no thread, and only the bound applies;
+- a `sh:select` whose text before `WHERE` changes byte length when uppercased (`ı` becomes
+  `I`, one byte shorter) is refused: rudof finds `WHERE` in the uppercased query and cuts the
+  original at that offset, so it would panic mid-character or bind `?this` in the wrong place.
 
 The reconstruction mirrors rudof's private query assembly, which is one more reason the rudof
-upper bound below is deliberate: raising it means re-reading that code.
+upper bound below is deliberate: raising it means re-reading that code. `tests/rudof_traps.rs`
+runs rudof without these guards as a control for each of the last two points.
 
-⚠ **Not bounded yet: recursion that is not SPARQL.** rudof parses a nested `sh:path` and
-compiles nested shapes (`sh:not [ sh:not [ … ] ]`) recursively, and oxrdf clones a nested
-RDF 1.2 triple term recursively while the Turtle is parsed. Deep enough input in `shapes` or
-`data` still overflows the caller's stack. `cargo test --test sparql_stack -- --ignored
---nocapture survey` prints every case.
+The recursion that is not SPARQL is bounded too, since 0.3.1 (ledger #992): nested shapes
+(`sh:not [ sh:not [ … ] ]`), deep or cyclic `sh:path`s and `owl:imports` chains are refused
+past 64 levels (`MAX_SHAPE_DEPTH`), nested RDF 1.2 triple terms in either graph past 64
+(`MAX_TURTLE_NESTING`), and a long RDF list compiles on a stack sized from the shapes text.
+
+⚠ **Not bounded: depth that is the DATA's.** A shape that follows itself along a path
+(`sh:property [ sh:path ex:next ; sh:node ex:S ]` on `ex:S`) is walked by rudof's validator one
+call per link of the data, so a chain of a few thousand links in `data` still overflows the
+validation thread and aborts the host. Nothing in the shapes graph is deep there, so no bound
+on it can refuse the case. `cargo test --test sparql_stack -- --ignored --nocapture survey`
+prints every case.
 
 ## Caller SPARQL never reaches the network
 
@@ -105,6 +117,9 @@ gated (ledger #1099). The guard is therefore entirely before rudof sees the text
   rudof's lenient Turtle reader keeps such an IRI there, and rudof writes the focus node into
   the query unescaped, where a `>` ends the IRI and the rest becomes query text.
 
+The `SERVICE` refusal opens with this endpoint's own sentence (which constraint, assembled
+how), then carries `ikigai_store::service::SERVICE_REFUSAL`, the text every crate refusing a
+`SERVICE` through the store's walk shares, so one match finds them all (ledger #1108).
 No grant opens either refusal: the endpoint never federates. Fetch remote data through the
 kernel, where the net capability applies, and validate it as `data`. rudof 0.3.24 does not
 evaluate SPARQL-based targets, SPARQL-based constraint components (`sh:ask`) or `owl:imports`

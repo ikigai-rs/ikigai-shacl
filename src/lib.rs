@@ -99,15 +99,20 @@ fn compile_shapes(ttl: &str) -> Result<IRSchema> {
 //    ([`bound_queries`]), because two of its pieces are not in any `sh:select` literal: the
 //    shape's `sh:path`, rendered into `$PATH`, and the `sh:declare` prefixes, written into a
 //    `PREFIX` header unescaped. A deep path or a prefix name carrying brackets nests the query
-//    the literal check never saw;
+//    the literal check never saw. It also refuses a select whose text before `WHERE` changes
+//    byte length when uppercased, where rudof's own assembly would panic or misplace `?this`
+//    ([`where_offset_holds`], ledger #1102);
 // 3. validation runs on `limits::on_sparql_stack`, a thread sized for the longest of those
 //    queries, because nesting is not the only recursion (a flat `||` chain is not refused and
-//    must still fit).
+//    must still fit), and rudof's validator inside it on a one-thread rayon pool of the same
+//    size ([`on_rudof_pool`]), because rudof hands a level of two or more shapes to rayon's
+//    2 MiB workers (ledger #1102).
 //
 // ⚠ Step 2 mirrors rudof's private query assembly (`basic_validator.rs` and
-// `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24).
-// The rudof upper bound in Cargo.toml is what keeps that mirror true; raising it means
-// re-reading those three functions.
+// `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24),
+// and step 3 rests on rudof's `ShaclProcessor::validate` using `par_iter_mut`. The rudof upper
+// bound in Cargo.toml is what keeps both true; raising it means re-reading those four functions
+// (tests/rudof_traps.rs has a control for each trap).
 //
 // ---------------------------------------------------------------------------
 // Caller SPARQL never reaches the network (ledger #1099, #1083).
@@ -121,7 +126,7 @@ fn compile_shapes(ttl: &str) -> Result<IRSchema> {
 // therefore entirely BEFORE rudof sees the text:
 //
 // 4. every query step 2 reconstructs is parsed with spargebra (oxigraph's own parser) and walked
-//    with `ikigai_store::service::refuse_service` ([`refuse_service_in`]). A query the mirror
+//    with `ikigai_store::service::has_service` ([`refuse_service_in`]). A query the mirror
 //    cannot parse is refused too, so a divergence from rudof's assembly fails closed. This also
 //    covers what no literal shows: a `SERVICE` written into an `sh:declare` PREFIX NAME, which
 //    rudof copies into the header unescaped;
@@ -197,18 +202,22 @@ fn refuse_service_in(query: &str) -> Result<()> {
                  checked for a `SERVICE`. Nothing was evaluated: {e}"
             ),
         })?;
-    // The store's walk, with a refusal worded for this endpoint: the store's own text names the
-    // store and its `urn:iki:store:load` remedy, neither of which applies here.
-    ikigai_store::service::refuse_service(&parsed, SHAPES_ARG).map_err(|_| Error::InvalidArgument {
-        name: SHAPES_ARG.to_string(),
-        detail: "a `sh:sparql` constraint's query, as rudof assembles it (its `sh:prefixes` \
-                     header, `sh:select` and `$PATH`), contains a `SERVICE`: a federated call \
-                     would be an outbound request from inside the SPARQL engine, gated by no \
-                     network capability, and no grant opens it here. Nothing was evaluated. \
-                     Fetch remote data through the kernel, where the net capability applies, \
-                     and validate it as `data`"
-            .to_string(),
-    })
+    // The store's walk, with this endpoint's own first sentence (which constraint, assembled how)
+    // before the store's shared consumer text (`SERVICE_REFUSAL`, matchable across the
+    // ecosystem), and this endpoint's remedy after it. Never the store's own refusal, whose
+    // `urn:iki:store:load` advice is wrong inside a shape (ledger #1108).
+    if ikigai_store::service::has_service(&parsed) {
+        return Err(Error::InvalidArgument {
+            name: SHAPES_ARG.to_string(),
+            detail: format!(
+                "a `sh:sparql` constraint's query, as rudof assembles it (its `sh:prefixes` \
+                 header, `sh:select` and `$PATH`), contains a `SERVICE`. {} Fetch remote data \
+                 through the kernel, where the net capability applies, and validate it as `data`.",
+                ikigai_store::service::SERVICE_REFUSAL
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// A character no SPARQL `IRIREF` may hold: `<>"{}|^`\` and every code point up to the space.
@@ -292,19 +301,42 @@ fn rudof_query(sparql: &BasicSparql, path: Option<&SHACLPath>) -> Result<String>
         sparql.select().clone()
     };
     let values = "VALUES ?this { <urn:ikigai:shacl:focus> }";
-    // rudof finds `WHERE` in the UPPERCASED text and slices the original at that offset, which
-    // is only the same offset while everything before it uppercases to the same length. `get`
-    // keeps this mirror from panicking where the two disagree; there the clause may land a few
-    // bytes from where rudof puts it, which moves the counted depth by its one brace at most.
-    let at = select.to_uppercase().find("WHERE").and_then(|at| {
-        let brace = select.get(at..)?.find('{')?;
-        Some(at + brace + 1)
-    });
-    let body = match at.and_then(|at| Some((select.get(..at)?, select.get(at..)?))) {
-        Some((before, after)) => format!("{before} {values}{after}"),
+    let at = match select.to_uppercase().find("WHERE") {
+        Some(at) => {
+            where_offset_holds(&select, at)?;
+            select[at..].find('{').map(|brace| at + brace + 1)
+        }
+        None => None,
+    };
+    let body = match at {
+        Some(at) => format!("{} {values}{}", &select[..at], &select[at..]),
         None => format!("{values} {select}"),
     };
     Ok(format!("{header}{body}"))
+}
+
+/// Refuse a select whose text before `WHERE` changes byte length when uppercased (ledger #1102).
+///
+/// rudof finds `WHERE` at byte `at` of the UPPERCASED select and slices the ORIGINAL select at
+/// that offset. The two agree only while everything before it uppercases to the same number of
+/// bytes, and `ı` (two bytes) uppercases to `I` (one): off a character boundary rudof's slice
+/// PANICS, and on one it injects `VALUES ?this` wherever the offset landed, into a comment for
+/// instance, so the constraint runs unbound and reports nodes that are not focus nodes. Since
+/// uppercasing maps each character on its own, `select[..at]` uppercasing to exactly `at` bytes
+/// is the exact condition for the offset to be the original's `WHERE`.
+fn where_offset_holds(select: &str, at: usize) -> Result<()> {
+    if select.get(..at).map(|before| before.to_uppercase().len()) == Some(at) {
+        return Ok(());
+    }
+    Err(Error::InvalidArgument {
+        name: SHAPES_ARG.to_string(),
+        detail: "a `sh:select` has text before its `WHERE` that changes byte length when \
+                 uppercased (`ı` uppercases to `I`, one byte shorter): rudof finds `WHERE` in \
+                 the uppercased query and cuts the original at that offset, where it would \
+                 panic mid-character or bind `?this` in the wrong place. Nothing was evaluated. \
+                 Write that text (a comment, a variable name, a string) without such characters"
+            .to_string(),
+    })
 }
 
 /// A SHACL path as rudof renders it into `$PATH`. Every level but a predicate adds a
@@ -703,7 +735,8 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 /// because LENGTH recurses too, and length is not refused: compiling on a thread sized from
 /// the shapes text (rudof parses an RDF list one call per element), and checking every query
 /// for a `SERVICE` ([`refuse_service_in`]), parsing the data and validating on one sized for the
-/// longest query. On wasm there is no thread and both run inline.
+/// longest query, with rudof's validator on a one-thread pool of that size ([`on_rudof_pool`]).
+/// On wasm there is no thread and both run inline.
 fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
     let (schema, queries) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
         let schema = compile_shapes(shapes_ttl)?;
@@ -722,10 +755,58 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
         // the upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior:
         // violations kept, conformance evidence off, cautious/LFP recursion semantics.
         let config = ShaclConfig::default();
-        validator
-            .validate(&schema, &ShaclValidationMode::Native, &config)
-            .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
+        // The pool's thread is sized like this one, for the longest query.
+        let longest = queries
+            .iter()
+            .max_by_key(|q| q.len())
+            .map_or("", String::as_str);
+        on_rudof_pool(longest, || {
+            validator
+                .validate(&schema, &ShaclValidationMode::Native, &config)
+                .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
+        })
     })
+}
+
+/// Run rudof's validator on a ONE-thread rayon pool whose thread has the stack `text` needs
+/// (`limits::sparql_stack_size`, the size `on_sparql_stack` gives), rather than on rayon's
+/// global pool (ledger #1102).
+///
+/// rudof validates each topological level of shapes with `par_iter_mut`. A level of one shape
+/// is not split and runs on the calling thread, already sized; a level of two or more is, and
+/// every shape in it then runs on a global-pool worker with the default 2 MiB stack, where a
+/// flat `||` chain the sized thread holds aborts the whole process (tests/rudof_traps.rs). From
+/// inside this pool's worker, rudof's `par_iter_mut` uses THIS pool, so the whole level runs on
+/// the one sized thread, in sequence. That gives up rudof's parallelism across the shapes of a
+/// level, which it only ever had for levels of two or more. ⚠ It works only because `rayon` here
+/// is the same `rayon-core` rudof's `par_iter_mut` resolves (see Cargo.toml). On wasm there is no
+/// thread, as for `on_sparql_stack`, and the work runs inline.
+fn on_rudof_pool<T, F>(text: &str, work: F) -> Result<T>
+where
+    T: Send,
+    F: FnOnce() -> Result<T> + Send,
+{
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let stack = ikigai_store::limits::sparql_stack_size(text);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .stack_size(stack)
+            .thread_name(|_| "ikigai-shacl-validate".to_string())
+            .build()
+            .map_err(|e| {
+                Error::Unavailable(format!(
+                    "urn:shacl:validate: could not start a {} MiB thread to validate on: {e}",
+                    stack >> 20
+                ))
+            })?;
+        pool.install(work)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = text;
+        work()
+    }
 }
 
 /// Validate, rendering per `as_type`: `application/json` → the [`Report`]; else the SHACL

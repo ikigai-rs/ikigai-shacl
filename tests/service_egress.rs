@@ -432,3 +432,33 @@ fn the_endpoint_refuses_service_under_root() {
     );
     assert_eq!(stub.requests(), Vec::<String>::new());
 }
+
+/// The refusal opens with this endpoint's own sentence (which constraint, assembled how), then
+/// carries the shared consumer text every crate refusing a `SERVICE` through
+/// `ikigai_store::service` writes, so one match catches them all, and never the store's own
+/// `urn:iki:store:load` advice, which is wrong inside a shape (ledger #1108).
+#[test]
+fn the_refusal_carries_the_shared_consumer_text_after_its_own_sentence() {
+    // Port 9 (discard) on loopback: refused before any connection, so nothing listens for it.
+    let shapes = select_shape(
+        "SELECT $this WHERE { $this a ?t . SERVICE <http://127.0.0.1:9/x> { ?s ?p ?o } }",
+    );
+    let Err(Error::InvalidArgument { name, detail }) = ikigai_shacl::validate_report(DATA, &shapes)
+    else {
+        panic!("a SERVICE in a sh:select was not refused");
+    };
+    assert_eq!(name, "shapes");
+    assert!(
+        detail.starts_with(
+            "a `sh:sparql` constraint's query, as rudof assembles it (its `sh:prefixes` header, \
+             `sh:select` and `$PATH`), contains a `SERVICE`. "
+        ),
+        "{detail}"
+    );
+    assert!(
+        detail.contains(ikigai_store::service::SERVICE_REFUSAL),
+        "{detail}"
+    );
+    assert!(detail.ends_with("and validate it as `data`."), "{detail}");
+    assert!(!detail.contains("urn:iki:store:load"), "{detail}");
+}
