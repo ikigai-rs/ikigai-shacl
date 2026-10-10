@@ -60,14 +60,24 @@ serde_json = "1"
 async-trait = "0.1"
 futures = "0.3"
 # `limits::check_sparql` and `limits::on_sparql_stack`: the bound on caller SPARQL (a shapes
-# graph's `sh:select`) and the sized stack validation runs on (ledger #963). 0.2.7 is where
-# `limits` landed; 0.2.8 is the floor because it is the release the bound was verified
-# against here. Default features OFF: `persistent` (RocksDB) stays out, so this adds only the
-# store crate and a `toml` 0.8 family to the graph (oxigraph and spargebra are rudof's already),
-# and it builds for wasm, where `on_sparql_stack` runs inline. (Its own `ikigai-core` floor,
-# 0.1.57, sits below ours.) ⚠ `^0.2.8` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976
-# folds the four copies of `limits.rs` into one shared crate, and this line moves to it.
-ikigai-store = { version = "0.2.8", default-features = false }
+# graph's `sh:select`) and the sized stack validation runs on (ledger #963); and
+# `service::refuse_service`, the walk that refuses a `SERVICE` anywhere in a parsed query
+# (ledger #1099). 0.2.10 is the floor because `service` landed there. Default features OFF:
+# `persistent` (RocksDB) stays out, so this adds only the store crate and a `toml` 0.8 family
+# to the graph (oxigraph and spargebra are rudof's already), and it builds for wasm, where
+# `on_sparql_stack` runs inline. (Its own `ikigai-core` floor, 0.1.57, sits below ours.)
+# ⚠ `^0.2.10` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976 folds the four copies of
+# `limits.rs` into one shared crate, and this line moves to it.
+ikigai-store = { version = "0.2.10", default-features = false }
+# The parser for the queries rudof will run, so `service::refuse_service` can walk them. It must
+# be the spargebra oxigraph parses with (0.4.x for oxigraph 0.5), which a caret unifies with on
+# its own; 0.4.7 is ikigai-store's floor. ⚠ `^0.4.7` is a CEILING too (<0.5.0).
+spargebra = "0.4.7"
+# The term types rudof's `RdfData` stores (`RdfData::Term` IS `oxrdf::Term`), matched directly
+# so every IRI, including a literal's datatype and the parts of a triple term, is checked before
+# rudof renders a focus node into SPARQL (ledger #1099). Floor and features are rudof_rdf's own
+# (0.3.3, `rdf-12`), so this adds nothing to the graph. ⚠ `^0.3.3` is a CEILING too (<0.4.0).
+oxrdf = { version = "0.3.3", features = ["rdf-12"] }
 
 # The `module` feature turns this library into a standalone lazy-loadable WASM module via
 # `ikigai_module::wasm_module!`. CI checks it both ways, so neither half can rot unseen again:

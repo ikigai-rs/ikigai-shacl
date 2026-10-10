@@ -58,11 +58,16 @@ pub fn space() -> EndpointSpace {
 }
 
 /// Parse a Turtle graph into rudof's in-memory `RdfData`, refusing first any triple-term
-/// nesting past [`MAX_TURTLE_NESTING`] (`role` is the argument the text arrived in).
+/// nesting past [`MAX_TURTLE_NESTING`], and then any IRI no SPARQL query can hold (see
+/// [`check_iris`]). `role` is the argument the text arrived in.
 fn parse_data(ttl: &str, role: &str) -> Result<RdfData> {
     depth::check_turtle_nesting(ttl, role)?;
-    RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default())
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}")))
+    let graph =
+        RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default()).map_err(|e| {
+            Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}"))
+        })?;
+    check_iris(&graph, role)?;
+    Ok(graph)
 }
 
 /// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema, refusing any
@@ -103,6 +108,35 @@ fn compile_shapes(ttl: &str) -> Result<IRSchema> {
 // `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24).
 // The rudof upper bound in Cargo.toml is what keeps that mirror true; raising it means
 // re-reading those three functions.
+//
+// ---------------------------------------------------------------------------
+// Caller SPARQL never reaches the network (ledger #1099, #1083).
+//
+// rudof_rdf turns `oxigraph/http-client` on for every native target, so in this crate's own
+// build, and in every host linking it, oxigraph's `SparqlEvaluator::new()` installs an HTTP
+// service handler. rudof evaluates each `sh:select` through exactly that constructor, built
+// privately inside `OxigraphInMemory::query_select`, so no refusing handler
+// (`ikigai_store::service::evaluator`) can be put on it: `SERVICE <http://…>` in a shapes graph
+// was an outbound request no `urn:cap:net:*` gates (tests/service_egress.rs). The guard is
+// therefore entirely BEFORE rudof sees the text:
+//
+// 4. every query step 2 reconstructs is parsed with spargebra (oxigraph's own parser) and walked
+//    with `ikigai_store::service::refuse_service` ([`refuse_service_in`]). A query the mirror
+//    cannot parse is refused too, so a divergence from rudof's assembly fails closed. This also
+//    covers what no literal shows: a `SERVICE` written into an `sh:declare` PREFIX NAME, which
+//    rudof copies into the header unescaped;
+// 5. the one piece the mirror replaces with a placeholder is the focus node, which rudof writes
+//    into `VALUES ?this { … }` with oxrdf's `Display`. A literal's lexical form is escaped there,
+//    and a blank-node label is lexed, but rudof's LENIENT Turtle reader keeps an IRI holding `>`
+//    in a literal's datatype or inside a triple term (it re-validates only plain subject,
+//    predicate and object IRIs), and that `>` ends the IRI in the query. So every IRI in both
+//    graphs is checked for the characters a SPARQL IRI cannot hold ([`check_iris`]).
+//
+// Only `sh:sparql`/`sh:select` is evaluated by rudof 0.3.24 (natively, in `ShaclValidationMode::
+// Native`); SPARQL-based targets (`sh:SPARQLTarget`), SPARQL-based constraint components
+// (`sh:ask`/`sh:validator`) and `owl:imports` are not parsed or fetched at all, and the egress
+// test pins that, so a rudof release that starts evaluating them fails it. `LOAD` cannot reach
+// rudof's evaluator: it only ever parses a QUERY.
 // ---------------------------------------------------------------------------
 
 /// The SHACL predicates whose literal object is a SPARQL query. rudof 0.3.24 runs only
@@ -131,11 +165,11 @@ fn bound_literals(shapes: &RdfData) -> Result<()> {
     Ok(())
 }
 
-/// Reconstruct every query rudof will build from `schema`, refuse any past the bounds, and
-/// return the longest — the one the validation thread is sized for. The focus node rudof
-/// splices into `VALUES` is data, a single term, and stands here as a short placeholder.
-fn bound_queries(schema: &IRSchema) -> Result<String> {
-    let mut longest = String::new();
+/// Reconstruct every query rudof will build from `schema` and refuse any past the bounds. The
+/// focus node rudof splices into `VALUES` is data, a single term, and stands here as a short
+/// placeholder ([`check_iris`] is what keeps the real one a single term).
+fn bound_queries(schema: &IRSchema) -> Result<Vec<String>> {
+    let mut queries = Vec::new();
     for (_, shape) in schema.iter() {
         for component in shape.components() {
             let IRComponent::BasicSparql(sparql) = component else {
@@ -143,12 +177,97 @@ fn bound_queries(schema: &IRSchema) -> Result<String> {
             };
             let query = rudof_query(sparql, shape.path())?;
             ikigai_store::limits::check_sparql(&query, SHAPES_ARG)?;
-            if query.len() > longest.len() {
-                longest = query;
-            }
+            queries.push(query);
         }
     }
-    Ok(longest)
+    Ok(queries)
+}
+
+/// Refuse a reconstructed query that holds a `SERVICE` anywhere, or that does not parse (so a
+/// mirror that has drifted from rudof's assembly fails closed rather than open). Parsing
+/// recurses, so this runs on the thread sized for the longest query, after its bounds.
+fn refuse_service_in(query: &str) -> Result<()> {
+    let parsed = spargebra::SparqlParser::new()
+        .parse_query(query)
+        .map_err(|e| Error::InvalidArgument {
+            name: SHAPES_ARG.to_string(),
+            detail: format!(
+                "the query rudof assembles from a `sh:sparql` constraint (its `sh:prefixes` \
+                 header, `sh:select` and `$PATH`) does not parse as SPARQL, so it cannot be \
+                 checked for a `SERVICE`. Nothing was evaluated: {e}"
+            ),
+        })?;
+    // The store's walk, with a refusal worded for this endpoint: the store's own text names the
+    // store and its `urn:iki:store:load` remedy, neither of which applies here.
+    ikigai_store::service::refuse_service(&parsed, SHAPES_ARG).map_err(|_| Error::InvalidArgument {
+        name: SHAPES_ARG.to_string(),
+        detail: "a `sh:sparql` constraint's query, as rudof assembles it (its `sh:prefixes` \
+                     header, `sh:select` and `$PATH`), contains a `SERVICE`: a federated call \
+                     would be an outbound request from inside the SPARQL engine, gated by no \
+                     network capability, and no grant opens it here. Nothing was evaluated. \
+                     Fetch remote data through the kernel, where the net capability applies, \
+                     and validate it as `data`"
+            .to_string(),
+    })
+}
+
+/// A character no SPARQL `IRIREF` may hold: `<>"{}|^`\` and every code point up to the space.
+fn forbidden_in_iri(c: char) -> bool {
+    matches!(c, '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\') || c <= ' '
+}
+
+/// The first IRI in `term` (a named node, a literal's datatype, or any part of a triple term)
+/// holding a character no IRI may hold. Recursion is bounded by [`MAX_TURTLE_NESTING`], checked
+/// before the graph was parsed.
+fn bad_iri_in(term: &oxrdf::Term) -> Option<&str> {
+    let check = |iri: &str| iri.chars().any(forbidden_in_iri);
+    match term {
+        oxrdf::Term::NamedNode(n) => check(n.as_str()).then_some(n.as_str()),
+        oxrdf::Term::BlankNode(_) => None,
+        oxrdf::Term::Literal(l) => check(l.datatype().as_str()).then(|| l.datatype().as_str()),
+        oxrdf::Term::Triple(t) => bad_iri_in_triple(t),
+    }
+}
+
+/// [`bad_iri_in`] over every position of a triple.
+fn bad_iri_in_triple(t: &oxrdf::Triple) -> Option<&str> {
+    let check = |iri: &str| iri.chars().any(forbidden_in_iri);
+    let subject = match &t.subject {
+        oxrdf::NamedOrBlankNode::NamedNode(n) => check(n.as_str()).then_some(n.as_str()),
+        oxrdf::NamedOrBlankNode::BlankNode(_) => None,
+    };
+    subject
+        .or_else(|| check(t.predicate.as_str()).then_some(t.predicate.as_str()))
+        .or_else(|| bad_iri_in(&t.object))
+}
+
+/// Refuse a graph holding an IRI that no SPARQL query can hold, as `InvalidArgument` on `role`.
+///
+/// rudof parses Turtle leniently and re-validates only a triple's own subject, predicate and
+/// object IRIs, so `"v"^^<…>…>` or an IRI inside a triple term keeps a `>`. rudof then writes
+/// a focus node into the query it runs for a `sh:sparql` constraint with oxrdf's `Display`,
+/// unescaped, where that `>` ends the IRI and the rest is query text: a `SERVICE` included. Such
+/// an IRI is not an IRI at all, so it is refused in every graph, whatever the shapes hold.
+fn check_iris(graph: &RdfData, role: &str) -> Result<()> {
+    let triples = graph
+        .triples()
+        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: {role} graph: {e}")))?;
+    for triple in triples {
+        if let Some(iri) = bad_iri_in_triple(&triple) {
+            let shown: String = iri.chars().take(120).collect();
+            return Err(Error::InvalidArgument {
+                name: role.to_string(),
+                detail: format!(
+                    "the {role} graph holds an IRI with a character no IRI may hold ({shown:?}). \
+                     rudof's lenient Turtle reader keeps it in a literal's datatype or inside a \
+                     triple term, and writes it unescaped into the SPARQL it runs for a \
+                     `sh:sparql` constraint, where it would end the IRI and inject query text, a \
+                     `SERVICE` included. Nothing was evaluated"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The query rudof's `BasicSparql::validate_sparql` issues for one focus node: a `PREFIX`
@@ -582,16 +701,21 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 /// rudof will parse is bounded first (see [`bound_queries`]), and so is every depth the
 /// caller's Turtle can reach (see the `depth` module). Then both halves run on sized stacks,
 /// because LENGTH recurses too, and length is not refused: compiling on a thread sized from
-/// the shapes text (rudof parses an RDF list one call per element), and parsing the data and
-/// validating on one sized for the longest query. On wasm there is no thread and both run
-/// inline.
+/// the shapes text (rudof parses an RDF list one call per element), and checking every query
+/// for a `SERVICE` ([`refuse_service_in`]), parsing the data and validating on one sized for the
+/// longest query. On wasm there is no thread and both run inline.
 fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
-    let (schema, longest) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
+    let (schema, queries) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
         let schema = compile_shapes(shapes_ttl)?;
-        let longest = bound_queries(&schema)?;
-        Ok((schema, longest))
+        let queries = bound_queries(&schema)?;
+        Ok((schema, queries))
     })?;
-    ikigai_store::limits::on_sparql_stack(&longest, move || {
+    let longest = queries.iter().max_by_key(|q| q.len()).cloned();
+    ikigai_store::limits::on_sparql_stack(longest.as_deref().unwrap_or(""), move || {
+        // No `SERVICE` reaches rudof's evaluator: "Caller SPARQL never reaches the network".
+        for query in &queries {
+            refuse_service_in(query)?;
+        }
         let data = parse_data(data_ttl, "data")?;
         let mut validator: DataValidation = data.into();
         // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see
@@ -1078,14 +1202,16 @@ mod tests {
   sh:sparql [ sh:prefixes :decls ;
     sh:select "SELECT $this ?value where { $this $PATH ?value }" ] .
 :decls sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.org/"^^xsd:anyURI ] ."#;
-        let longest = bound_queries(&compile_shapes(shapes).unwrap()).unwrap();
+        let queries = bound_queries(&compile_shapes(shapes).unwrap()).unwrap();
         assert_eq!(
-            longest,
-            "PREFIX ex: <http://example.org/>\n\
+            queries,
+            ["PREFIX ex: <http://example.org/>\n\
              SELECT $this ?value where { VALUES ?this { <urn:ikigai:shacl:focus> } $this \
              (^(<http://example.org/p>)/((<http://example.org/q>|(<http://example.org/r>)+|\
-             (<http://example.org/s>)?))*) ?value }"
+             (<http://example.org/s>)?))*) ?value }"]
         );
+        // And the mirror's output is SPARQL oxigraph's parser accepts, with no `SERVICE`.
+        refuse_service_in(&queries[0]).unwrap();
     }
 
     #[test]
