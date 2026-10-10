@@ -61,15 +61,24 @@ async-trait = "0.1"
 futures = "0.3"
 # `limits::check_sparql` and `limits::on_sparql_stack`: the bound on caller SPARQL (a shapes
 # graph's `sh:select`) and the sized stack validation runs on (ledger #963); and
-# `service::refuse_service`, the walk that refuses a `SERVICE` anywhere in a parsed query
-# (ledger #1099). 0.2.10 is the floor because `service` landed there. Default features OFF:
+# `service::has_service`, the walk that finds a `SERVICE` anywhere in a parsed query
+# (ledger #1099). 0.2.11 is the floor: `service::has_service` and `SERVICE_REFUSAL`, the shared
+# consumer wording this crate's refusal now carries after its own first sentence (ledger #1108),
+# landed there (`service` itself at 0.2.10, `limits::sparql_stack_size` earlier). Default features OFF:
 # `persistent` (RocksDB) stays out, so this adds only the store crate and a `toml` 0.8 family
 # to the graph (oxigraph and spargebra are rudof's already), and it builds for wasm, where
 # `on_sparql_stack` runs inline. (Its own `ikigai-core` floor, 0.1.57, sits below ours.)
-# ⚠ `^0.2.10` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976 folds the four copies of
+# ⚠ `^0.2.11` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976 folds the four copies of
 # `limits.rs` into one shared crate, and this line moves to it.
-ikigai-store = { version = "0.2.10", default-features = false }
-# The parser for the queries rudof will run, so `service::refuse_service` can walk them. It must
+ikigai-store = { version = "0.2.11", default-features = false }
+# The pool rudof's validator runs in (`on_rudof_pool`, ledger #1102): rudof splits a level of two
+# or more shapes with `par_iter_mut`, which runs on the global pool's 2 MiB workers unless it is
+# called from inside a pool of ours. ⚠ That only holds if this is the SAME rayon-core rudof's
+# `par_iter_mut` resolves, which a `1.x` caret guarantees (one semver-compatible rayon-core per
+# graph). 1.7 is rudof's own floor, so this adds nothing to the graph; `ThreadPoolBuilder`'s
+# `num_threads`/`stack_size`/`thread_name` and `install` are far older.
+rayon = "1.7"
+# The parser for the queries rudof will run, so `service::has_service` can walk them. It must
 # be the spargebra oxigraph parses with (0.4.x for oxigraph 0.5), which a caret unifies with on
 # its own; 0.4.7 is ikigai-store's floor. ⚠ `^0.4.7` is a CEILING too (<0.5.0).
 spargebra = "0.4.7"
