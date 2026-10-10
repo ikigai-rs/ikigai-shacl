@@ -12,6 +12,10 @@ itself an RDF graph**:
 Both faces are declared outputs, and `as` lists exactly those two values, so an agent
 reading `urn:kernel:actions` can reach either one.
 
+`ikigai_shacl::space()` is configuration-free, so it names itself `urn:iki:space:shacl`
+(exported as `ikigai_shacl::SPACE_ID`); that is the name `urn:kernel:topology`, the space
+diagrams and `answered_by` show for it.
+
 ## The report graph has no blank nodes
 
 rudof's `to_rdf` mints a blank node for the report, one per result, and passes through
