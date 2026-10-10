@@ -57,6 +57,32 @@ does not link); nothing here yet *loads* it in a browser or other wasm runtime. 
 [`shacl-engine`](https://www.npmjs.com/package/shacl-engine) remains a second implementation
 of the same `urn:shacl:validate` resource, held to the same corpus (see Parity below).
 
+## Caller SPARQL is bounded before rudof parses it
+
+A shapes graph is caller text, and its `sh:select` constraints are SPARQL that rudof hands
+to oxigraph's parser and evaluator once per focus node. Both recurse, and a stack overflow
+aborts the whole process rather than failing one request: 300 nested parentheses in a
+`sh:select`, or a 300-term `||` chain, killed a 2 MiB thread through `urn:shacl:validate`
+(ledger #963). So, with the bounds and wording of `ikigai-store`'s `limits` module:
+
+- every `sh:select` and `sh:ask` literal is checked before rudof compiles the shapes graph,
+  and refused with a typed `InvalidArgument` on `shapes` past 1 MiB or 64 levels of nesting;
+- the query rudof will actually build from each constraint is reconstructed and checked too,
+  because two of its pieces are in no literal: the shape's `sh:path`, written into `$PATH`,
+  and the `sh:declare` prefix names, written into a `PREFIX` header unescaped;
+- validation runs on a thread sized for the longest of those queries (16 MiB plus 512 bytes
+  per byte of query), so a long flat chain the nesting bound does not refuse still fits. On
+  wasm there is no thread, and only the bound applies.
+
+The reconstruction mirrors rudof's private query assembly, which is one more reason the rudof
+upper bound below is deliberate: raising it means re-reading that code.
+
+⚠ **Not bounded yet: recursion that is not SPARQL.** rudof parses a nested `sh:path` and
+compiles nested shapes (`sh:not [ sh:not [ … ] ]`) recursively, and oxrdf clones a nested
+RDF 1.2 triple term recursively while the Turtle is parsed. Deep enough input in `shapes` or
+`data` still overflows the caller's stack. `cargo test --test sparql_stack -- --ignored
+--nocapture survey` prints every case.
+
 ## Dependency pins
 
 The rudof crates are pinned with a **real upper bound** (`>=0.3.22, <0.3.25`), not a

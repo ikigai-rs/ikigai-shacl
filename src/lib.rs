@@ -31,9 +31,10 @@ use ikigai_core::{
 };
 use rudof_rdf::rdf_core::term::literal::ConcreteLiteral;
 use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object, Triple as RdfTriple};
-use rudof_rdf::rdf_core::{BuildRDF, NeighsRDF, RDFFormat, Rdf};
+use rudof_rdf::rdf_core::{BuildRDF, NeighsRDF, RDFFormat, Rdf, SHACLPath};
 use rudof_rdf::rdf_impl::{OxigraphInMemory, ReaderMode};
-use shacl::ir::IRSchema;
+use shacl::ir::components::BasicSparql;
+use shacl::ir::{IRComponent, IRSchema};
 use shacl::rdf::ShaclParser;
 use shacl::types::MessageMap;
 use shacl::validator::processor::{DataValidation, ShaclProcessor};
@@ -52,14 +53,158 @@ fn parse_data(ttl: &str, role: &str) -> Result<RdfData> {
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}")))
 }
 
-/// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema.
+/// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema, refusing any
+/// SPARQL literal in it past the bounds before rudof sees the graph.
 fn compile_shapes(ttl: &str) -> Result<IRSchema> {
     let shapes = parse_data(ttl, "shapes")?;
+    bound_literals(&shapes)?;
     let ast = ShaclParser::new(shapes)
         .parse()
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes parse error: {e}")))?;
     ast.try_into()
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes compile error: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Caller SPARQL is bounded before rudof parses it (ledger #963).
+//
+// A `sh:select` is caller text, and rudof hands it to oxigraph's SPARQL parser and evaluator
+// once per focus node, inside `validate`. Both recurse, and a stack overflow aborts the WHOLE
+// process, not one request: 300 nested parentheses, or a 300-term `||` chain, killed a 2 MiB
+// thread through `urn:shacl:validate` (tests/sparql_stack.rs). So, as at the store's doors:
+//
+// 1. every SPARQL-carrying literal in the shapes graph is checked with
+//    `ikigai_store::limits::check_sparql` before rudof compiles anything ([`bound_literals`]);
+// 2. the query rudof will actually BUILD from each constraint is reconstructed and checked too
+//    ([`bound_queries`]), because two of its pieces are not in any `sh:select` literal: the
+//    shape's `sh:path`, rendered into `$PATH`, and the `sh:declare` prefixes, written into a
+//    `PREFIX` header unescaped. A deep path or a prefix name carrying brackets nests the query
+//    the literal check never saw;
+// 3. validation runs on `limits::on_sparql_stack`, a thread sized for the longest of those
+//    queries, because nesting is not the only recursion (a flat `||` chain is not refused and
+//    must still fit).
+//
+// ⚠ Step 2 mirrors rudof's private query assembly (`basic_validator.rs` and
+// `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24).
+// The rudof upper bound in Cargo.toml is what keeps that mirror true; raising it means
+// re-reading those three functions.
+// ---------------------------------------------------------------------------
+
+/// The SHACL predicates whose literal object is a SPARQL query. rudof 0.3.24 runs only
+/// `sh:select`; `sh:ask` is bounded as well because it is the other SPARQL text SHACL defines
+/// (SPARQL-based constraint components), and refusing it costs nothing.
+const SPARQL_PREDICATES: [&str; 2] = [
+    "http://www.w3.org/ns/shacl#select",
+    "http://www.w3.org/ns/shacl#ask",
+];
+
+/// The argument every refusal names: the SPARQL arrived inside the shapes graph.
+const SHAPES_ARG: &str = "shapes";
+
+/// Refuse any SPARQL literal in the shapes graph past `limits::check_sparql`'s bounds.
+fn bound_literals(shapes: &RdfData) -> Result<()> {
+    let bad = |e: String| Error::Endpoint(format!("urn:shacl:validate: shapes graph: {e}"));
+    for triple in shapes.triples().map_err(|e| bad(e.to_string()))? {
+        let (_, predicate, object) = triple.into_components();
+        if !SPARQL_PREDICATES.contains(&predicate.as_str()) {
+            continue;
+        }
+        if let Ok(Object::Literal(lit)) = RdfData::term_as_object(&object) {
+            ikigai_store::limits::check_sparql(&lit.lexical_form(), SHAPES_ARG)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reconstruct every query rudof will build from `schema`, refuse any past the bounds, and
+/// return the longest — the one the validation thread is sized for. The focus node rudof
+/// splices into `VALUES` is data, a single term, and stands here as a short placeholder.
+fn bound_queries(schema: &IRSchema) -> Result<String> {
+    let mut longest = String::new();
+    for (_, shape) in schema.iter() {
+        for component in shape.components() {
+            let IRComponent::BasicSparql(sparql) = component else {
+                continue;
+            };
+            let query = rudof_query(sparql, shape.path())?;
+            ikigai_store::limits::check_sparql(&query, SHAPES_ARG)?;
+            if query.len() > longest.len() {
+                longest = query;
+            }
+        }
+    }
+    Ok(longest)
+}
+
+/// The query rudof's `BasicSparql::validate_sparql` issues for one focus node: a `PREFIX`
+/// header from `sh:prefixes`, the `sh:select` with `$PATH` replaced by the shape's path, and a
+/// `VALUES ?this` clause injected after the first `{` following `WHERE`.
+fn rudof_query(sparql: &BasicSparql, path: Option<&SHACLPath>) -> Result<String> {
+    let header: String = sparql
+        .prefixes()
+        .map(|p| {
+            p.iter()
+                .map(|(prefix, iri)| format!("PREFIX {prefix}: <{iri}>\n"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let select = if sparql.select().contains("$PATH") {
+        let rendered = match path {
+            Some(path) => path_to_sparql(path, 0)?,
+            None => String::new(),
+        };
+        sparql.select().replace("$PATH", &rendered)
+    } else {
+        sparql.select().clone()
+    };
+    let values = "VALUES ?this { <urn:ikigai:shacl:focus> }";
+    // rudof finds `WHERE` in the UPPERCASED text and slices the original at that offset, which
+    // is only the same offset while everything before it uppercases to the same length. `get`
+    // keeps this mirror from panicking where the two disagree; there the clause may land a few
+    // bytes from where rudof puts it, which moves the counted depth by its one brace at most.
+    let at = select.to_uppercase().find("WHERE").and_then(|at| {
+        let brace = select.get(at..)?.find('{')?;
+        Some(at + brace + 1)
+    });
+    let body = match at.and_then(|at| Some((select.get(..at)?, select.get(at..)?))) {
+        Some((before, after)) => format!("{before} {values}{after}"),
+        None => format!("{values} {select}"),
+    };
+    Ok(format!("{header}{body}"))
+}
+
+/// A SHACL path as rudof renders it into `$PATH`. Every level but a predicate adds a
+/// parenthesis, so a path deeper than `MAX_SPARQL_NESTING` can only make a query the bound
+/// refuses — and this refuses it there, which also keeps this recursion shallow.
+fn path_to_sparql(path: &SHACLPath, depth: usize) -> Result<String> {
+    use ikigai_store::limits::MAX_SPARQL_NESTING;
+    if depth > MAX_SPARQL_NESTING {
+        return Err(Error::InvalidArgument {
+            name: SHAPES_ARG.to_string(),
+            detail: format!(
+                "a `sh:select` uses `$PATH`, and the `sh:path` it stands for nests deeper than \
+                 {MAX_SPARQL_NESTING} (MAX_SPARQL_NESTING): rudof writes every level of it into \
+                 the query as a parenthesis, and the SPARQL parser recurses once per level, where \
+                 a stack overflow aborts the whole host. Flatten the path"
+            ),
+        });
+    }
+    let all = |paths: &[SHACLPath], sep: &str| -> Result<String> {
+        let parts = paths
+            .iter()
+            .map(|p| path_to_sparql(p, depth + 1))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(format!("({})", parts.join(sep)))
+    };
+    Ok(match path {
+        SHACLPath::Predicate { pred } => format!("<{pred}>"),
+        SHACLPath::Alternative { paths } => all(paths, "|")?,
+        SHACLPath::Sequence { paths } => all(paths, "/")?,
+        SHACLPath::Inverse { path } => format!("^({})", path_to_sparql(path, depth + 1)?),
+        SHACLPath::ZeroOrMore { path } => format!("({})*", path_to_sparql(path, depth + 1)?),
+        SHACLPath::OneOrMore { path } => format!("({})+", path_to_sparql(path, depth + 1)?),
+        SHACLPath::ZeroOrOne { path } => format!("({})?", path_to_sparql(path, depth + 1)?),
+    })
 }
 
 /// Is `s` an inline Turtle shapes graph rather than a resource reference? Turtle opens with
@@ -418,18 +563,23 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
     Ok(validate_report(data_ttl, shapes_ttl)?.outcome())
 }
 
-/// Run the validator: data graph + compiled shapes → rudof ValidationReport.
+/// Run the validator: data graph + compiled shapes → rudof ValidationReport. Every query
+/// rudof will parse is bounded first, and the validation runs on a thread sized for the
+/// longest of them (see [`bound_queries`]); on wasm there is no thread and it runs inline.
 fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
     let schema = compile_shapes(shapes_ttl)?;
+    let longest = bound_queries(&schema)?;
     let data = parse_data(data_ttl, "data")?;
-    let mut validator: DataValidation = data.into();
-    // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see the
-    // upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior: violations kept,
-    // conformance evidence off, cautious/LFP recursion semantics.
-    let config = ShaclConfig::default();
-    validator
-        .validate(&schema, &ShaclValidationMode::Native, &config)
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
+    ikigai_store::limits::on_sparql_stack(&longest, move || {
+        let mut validator: DataValidation = data.into();
+        // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see
+        // the upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior:
+        // violations kept, conformance evidence off, cautious/LFP recursion semantics.
+        let config = ShaclConfig::default();
+        validator
+            .validate(&schema, &ShaclValidationMode::Native, &config)
+            .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
+    })
 }
 
 /// Validate, rendering per `as_type`: `application/json` → the [`Report`]; else the SHACL
@@ -891,6 +1041,54 @@ mod tests {
         }
         // The template is resolved on this face too — not copied through verbatim.
         assert!(!ttl.contains("{?value}"), "unresolved template in:\n{ttl}");
+    }
+
+    /// The mirror of rudof's query assembly, pinned on every piece it copies: the PREFIX header
+    /// from `sh:declare`, every SHACL path operator rendered into `$PATH`, and the `VALUES`
+    /// clause injected after the first `{` following `WHERE` (found case-insensitively).
+    #[test]
+    fn the_query_mirror_assembles_what_rudof_assembles() {
+        let shapes = r#"@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://example.org/> .
+:S a sh:NodeShape ; sh:targetClass :Person ; sh:property :P .
+:P sh:path ( [ sh:inversePath :p ] [ sh:zeroOrMorePath [ sh:alternativePath ( :q [ sh:oneOrMorePath :r ] [ sh:zeroOrOnePath :s ] ) ] ] ) ;
+  sh:sparql [ sh:prefixes :decls ;
+    sh:select "SELECT $this ?value where { $this $PATH ?value }" ] .
+:decls sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.org/"^^xsd:anyURI ] ."#;
+        let longest = bound_queries(&compile_shapes(shapes).unwrap()).unwrap();
+        assert_eq!(
+            longest,
+            "PREFIX ex: <http://example.org/>\n\
+             SELECT $this ?value where { VALUES ?this { <urn:ikigai:shacl:focus> } $this \
+             (^(<http://example.org/p>)/((<http://example.org/q>|(<http://example.org/r>)+|\
+             (<http://example.org/s>)?))*) ?value }"
+        );
+    }
+
+    #[test]
+    fn a_path_is_refused_one_level_past_the_bound_and_rendered_at_it() {
+        // A predicate path, taken from a compiled shape (rudof's `IriS` is not re-exported).
+        let schema = compile_shapes(SHAPES).unwrap();
+        let mut path = schema
+            .iter()
+            .find_map(|(_, shape)| shape.path().cloned())
+            .unwrap();
+        for _ in 0..ikigai_store::limits::MAX_SPARQL_NESTING {
+            path = SHACLPath::ZeroOrOne {
+                path: Box::new(path),
+            };
+        }
+        // 64 operators around a predicate: the predicate sits at depth 64, which renders.
+        assert!(path_to_sparql(&path, 0).is_ok());
+        let path = SHACLPath::ZeroOrOne {
+            path: Box::new(path),
+        };
+        let err = path_to_sparql(&path, 0).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidArgument { name, .. } if name == "shapes"),
+            "{err}"
+        );
     }
 
     #[test]

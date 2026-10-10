@@ -58,6 +58,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 futures = "0.3"
+# `limits::check_sparql` and `limits::on_sparql_stack`: the bound on caller SPARQL (a shapes
+# graph's `sh:select`) and the sized stack validation runs on (ledger #963). 0.2.7 is where
+# `limits` landed; 0.2.8 is the floor because it is the release the bound was verified
+# against here. Default features OFF: `persistent` (RocksDB) stays out, so this adds only the
+# store crate and a `toml` 0.8 family to the graph (oxigraph and spargebra are rudof's already),
+# and it builds for wasm, where `on_sparql_stack` runs inline. ⚠ It also lifts the graph's
+# effective `ikigai-core` floor to 0.1.57, the store's; the 0.1.34 above is still the API this
+# crate's own code uses. ⚠ `^0.2.8` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976
+# folds the four copies of `limits.rs` into one shared crate, and this line moves to it.
+ikigai-store = { version = "0.2.8", default-features = false }
 
 # The `module` feature turns this library into a standalone lazy-loadable WASM module via
 # `ikigai_module::wasm_module!`. CI checks it both ways, so neither half can rot unseen again:
