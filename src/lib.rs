@@ -26,8 +26,8 @@
 
 use async_trait::async_trait;
 use ikigai_core::{
-    ArgRef, ArgSpec, ContentId, Description, Endpoint, EndpointSpace, Error, Exact, Invocation,
-    Iri, ReprType, Representation, Request, Result, Verb,
+    space_iri, ArgRef, ArgSpec, ContentId, Description, Endpoint, EndpointSpace, Error, Exact,
+    Invocation, Iri, ReprType, Representation, Request, Result, Verb,
 };
 use rudof_rdf::rdf_core::term::literal::ConcreteLiteral;
 use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object, Triple as RdfTriple};
@@ -42,9 +42,16 @@ use shacl::validator::report::{ValidationReport, ValidationResult};
 use shacl::validator::{ShaclConfig, ShaclValidationMode};
 use sparql_service::RdfData;
 
-/// The space binding `urn:shacl:validate`.
+/// The name [`space`] claims: `urn:iki:space:shacl`.
+pub const SPACE_ID: &str = "urn:iki:space:shacl";
+
+/// The space binding `urn:shacl:validate`. It is configuration-free (no parameters, nothing
+/// read while building it), so it names itself [`SPACE_ID`]; the name goes on LAST, because
+/// binding a door after naming drops the name (core 0.1.89).
 pub fn space() -> EndpointSpace {
-    EndpointSpace::new().bind(Exact::new("urn:shacl:validate"), ValidateEndpoint)
+    EndpointSpace::new()
+        .bind(Exact::new("urn:shacl:validate"), ValidateEndpoint)
+        .named(space_iri("shacl"))
 }
 
 /// Parse a Turtle graph into rudof's in-memory `RdfData`.

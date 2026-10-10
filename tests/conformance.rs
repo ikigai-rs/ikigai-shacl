@@ -39,6 +39,14 @@
 //!   content address of the report, that the naming is deterministic, and that two
 //!   different reports never collide.
 //!
+//! ## The space's name
+//!
+//! `ikigai_shacl::space()` is configuration-free (one unit-struct endpoint, no
+//! parameters, nothing read while building it), so it names itself
+//! `urn:iki:space:shacl` and [`inline`] declares it self-named (SPACE-NAME). The
+//! by-reference kernel extends it with a fixture door, and since core 0.1.89 that
+//! `bind` drops the name, so the extended space does not claim doors it lacks.
+//!
 //! No opt-outs. No module namespace: the report graph is `sh:` and `rdf:`, both
 //! well-known, so this module invents no term and needs nothing from the
 //! vocabulary. NAMES runs — `shacl-validate` is already kebab-case.
@@ -146,9 +154,15 @@ fn inline() {
         .fixture(fixture(SHAPES))
         .pure(ID)
         .cacheable(ID)
+        .self_named_space("shacl", ikigai_shacl::space)
         .run_blocking(&inline_kernel());
     eprintln!("== inline shapes ==\n{report}");
     assert!(report.is_clean(), "{report}");
+    assert_eq!(
+        ikigai_core::space_iri("shacl").as_str(),
+        ikigai_shacl::SPACE_ID,
+        "the exported name is the one the suite checked"
+    );
     assert_eq!(report.endpoints, 1, "one endpoint: {report}");
     assert_eq!(report.actions, 1, "one Source action: {report}");
     assert_eq!(

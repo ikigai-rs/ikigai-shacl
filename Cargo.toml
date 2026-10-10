@@ -14,11 +14,12 @@ categories = ["web-programming"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.1.34 is the floor this crate's manifold needs: `ArgSpec::one_of` and
-# `ArgSpec::default_value` landed there (core #55, "ActionSpec: the (endpoint, verb)
-# pair becomes the unit of selection"), and `as` declares both. `ArgSpec::class`
-# predates it (0.1.32) and `ContentId::of` is older still (<= 0.1.21).
-ikigai-core = "0.1.34"
+# 0.1.89 is the floor: `space_iri` (a configuration-free space names itself
+# `urn:iki:space:shacl`, ledger #987), and the release where a later `bind` drops a space's
+# name, which is what makes naming `space()` safe for a host that extends it. (The older
+# floors it subsumes: `ArgSpec::one_of`/`default_value` at 0.1.34, `ArgSpec::class` at
+# 0.1.32.) ⚠ `^0.1.89` is also a CEILING (<0.2.0).
+ikigai-core = "0.1.89"
 # rudof's consolidated SHACL crate (NOT the split shacl_validation/shacl_ast, which are
 # mid-rename and don't compose). In-memory (no rocksdb).
 #
@@ -63,9 +64,8 @@ futures = "0.3"
 # `limits` landed; 0.2.8 is the floor because it is the release the bound was verified
 # against here. Default features OFF: `persistent` (RocksDB) stays out, so this adds only the
 # store crate and a `toml` 0.8 family to the graph (oxigraph and spargebra are rudof's already),
-# and it builds for wasm, where `on_sparql_stack` runs inline. ⚠ It also lifts the graph's
-# effective `ikigai-core` floor to 0.1.57, the store's; the 0.1.34 above is still the API this
-# crate's own code uses. ⚠ `^0.2.8` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976
+# and it builds for wasm, where `on_sparql_stack` runs inline. (Its own `ikigai-core` floor,
+# 0.1.57, sits below ours.) ⚠ `^0.2.8` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976
 # folds the four copies of `limits.rs` into one shared crate, and this line moves to it.
 ikigai-store = { version = "0.2.8", default-features = false }
 
@@ -116,8 +116,8 @@ module = [
 
 [dev-dependencies]
 futures = "0.3"
-# The module recipe as one test (tests/conformance.rs). ⚠ It requires
-# `ikigai-core >= 0.1.67`, and cargo unifies core across the graph, so the DEV build
-# always links 0.1.67+ — the declared 0.1.34 floor above is the library's true
-# minimum API and is never exercised here. (conformance PENDING #126/#137/#144.)
-ikigai-conformance = "0.2.0"
+# The module recipe as one test (tests/conformance.rs). 0.6.0 is the floor for SPACE-NAME
+# (`self_named_space`, ledger #987). ⚠ `^0.6.0` is a CEILING (<0.7.0): this pin sat at
+# "0.2.0" while the suite grew through 0.3 to 0.6, and the test kept reporting green against
+# the old definition of "done". Raise it deliberately when the suite moves.
+ikigai-conformance = "0.6.0"
