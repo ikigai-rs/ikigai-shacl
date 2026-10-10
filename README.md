@@ -87,6 +87,30 @@ RDF 1.2 triple term recursively while the Turtle is parsed. Deep enough input in
 `data` still overflows the caller's stack. `cargo test --test sparql_stack -- --ignored
 --nocapture survey` prints every case.
 
+## Caller SPARQL never reaches the network
+
+rudof_rdf turns on oxigraph's `http-client` feature on every native target, so this crate's own
+build, and every host linking it, has oxigraph's HTTP `SERVICE` handler installed. rudof runs
+each `sh:select` through an evaluator it builds privately, which no refusing handler can be put
+on, so a `SERVICE <http://…>` in a shapes graph was an outbound request that no `urn:cap:net:*`
+gated (ledger #1099). The guard is therefore entirely before rudof sees the text:
+
+- every query rudof will build (the reconstruction above) is parsed with oxigraph's own parser
+  and refused with a typed `InvalidArgument` on `shapes` when it holds a `SERVICE` anywhere,
+  `SILENT`, nested or in a sub-select included, or when it does not parse at all, so a
+  reconstruction that has drifted from rudof's fails closed. That covers a `SERVICE` written
+  into an `sh:declare` prefix NAME, which rudof copies into its `PREFIX` header unescaped;
+- every IRI in both graphs, a literal's datatype and the parts of an RDF 1.2 triple term
+  included, is refused (on `shapes` or `data`) when it holds a character no IRI may hold.
+  rudof's lenient Turtle reader keeps such an IRI there, and rudof writes the focus node into
+  the query unescaped, where a `>` ends the IRI and the rest becomes query text.
+
+No grant opens either refusal: the endpoint never federates. Fetch remote data through the
+kernel, where the net capability applies, and validate it as `data`. rudof 0.3.24 does not
+evaluate SPARQL-based targets, SPARQL-based constraint components (`sh:ask`) or `owl:imports`
+at all; `tests/service_egress.rs` runs every case against a loopback stub, including a
+control that shows rudof's own evaluator does reach it in this build.
+
 ## Dependency pins
 
 The rudof crates are pinned with a **real upper bound** (`>=0.3.22, <0.3.25`), not a
