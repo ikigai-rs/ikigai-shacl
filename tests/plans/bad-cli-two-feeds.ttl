@@ -1,0 +1,10 @@
+# Source: ikigai-cli crates/ikigai-engine/tests/plan_eval.rs, `TWO_FEEDS`: a step fed two ways.
+# expect: urn:ikigai:shape:step SPARQLConstraintComponent
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+<urn:plan:two> a ik:Process ;
+    ik:step <urn:plan:two:step:1> , <urn:plan:two:step:2> ;
+    ik:result <urn:plan:two:step:2> .
+<urn:plan:two:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:cms:bookmarks> .
+<urn:plan:two:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:pipeFrom <urn:plan:two:step:1> ; ik:mapOver <urn:plan:two:step:1> .

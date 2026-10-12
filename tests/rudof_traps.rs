@@ -21,6 +21,9 @@
 //! probe named in its environment), as in `tests/sparql_stack.rs`, so an abort is a failed
 //! assertion here rather than a dead test binary.
 
+// rudof's own behavior (and the guards in front of it), so only a build with rudof has it to test.
+#![cfg(feature = "rudof")]
+
 use futures::executor::block_on;
 use ikigai_core::{ArgRef, Capability, Error, Iri, Kernel, Request, Verb};
 use rudof_rdf::rdf_core::RDFFormat;

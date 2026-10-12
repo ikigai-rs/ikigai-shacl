@@ -1,0 +1,11 @@
+# Source: derived for ikigai-shacl from the `pure` plan in ikigai-cli crates/ikigai-engine/tests/plan_eval.rs; breaks it: two steps that pipe from each other.
+# expect: urn:ikigai:shape:process SPARQLConstraintComponent
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<urn:plan:p> a ik:Process ;
+    ik:step <urn:plan:p:step:1> , <urn:plan:p:step:2> ;
+    ik:result <urn:plan:p:step:2> .
+<urn:plan:p:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:cms:bookmarks> ; ik:binds "urls" ; ik:pipeFrom <urn:plan:p:step:2> .
+<urn:plan:p:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:pipeFrom <urn:plan:p:step:1> .

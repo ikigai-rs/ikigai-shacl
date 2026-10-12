@@ -19,6 +19,9 @@
 //!
 //! Every request goes to a stub on 127.0.0.1 with an ephemeral port, never a real host.
 
+// rudof's own behavior (and the guards in front of it), so only a build with rudof has it to test.
+#![cfg(feature = "rudof")]
+
 use futures::executor::block_on;
 use ikigai_core::{ArgRef, Capability, Error, Iri, Kernel, Request, Verb};
 use std::io::{Read, Write};

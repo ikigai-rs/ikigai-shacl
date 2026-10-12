@@ -1,0 +1,10 @@
+# Source: ikigai-cli crates/ikigai-engine/tests/plan_eval.rs, `a_target_that_resolves_nowhere_is_reported_not_guessed`.
+# expect: conforms
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+<urn:plan:gap> a ik:Process ;
+    ik:step <urn:plan:gap:step:1> , <urn:plan:gap:step:2> ;
+    ik:result <urn:plan:gap:step:2> .
+<urn:plan:gap:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:cms:bookmarks> .
+<urn:plan:gap:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:t:nowhere> ;
+    ik:pipeFrom <urn:plan:gap:step:1> .
