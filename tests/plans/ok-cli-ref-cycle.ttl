@@ -1,0 +1,13 @@
+# Source: ikigai-cli crates/ikigai-engine/tests/plan_eval.rs, `REF_CYCLE`: a cycle through names, which the shapes cannot see (the reader refuses it).
+# expect: conforms
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+<urn:plan:loop> a ik:Process ;
+    ik:step <urn:plan:loop:step:1> , <urn:plan:loop:step:2> ;
+    ik:result <urn:plan:loop:step:2> .
+<urn:plan:loop:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:binds "a" ; ik:argument <urn:plan:loop:step:1:arg:in> .
+<urn:plan:loop:step:1:arg:in> a ik:Argument ; ik:inputName "in" ; ik:ref <urn:plan:loop:var:b> .
+<urn:plan:loop:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:binds "b" ; ik:argument <urn:plan:loop:step:2:arg:in> .
+<urn:plan:loop:step:2:arg:in> a ik:Argument ; ik:inputName "in" ; ik:ref <urn:plan:loop:var:a> .

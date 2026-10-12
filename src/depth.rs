@@ -43,9 +43,13 @@
 //!    recursive `foaf:knows` shape over a few thousand people is ordinary data.
 
 use ikigai_core::{Error, Result};
+#[cfg(feature = "rudof")]
 use rudof_rdf::rdf_core::term::{Object, Triple as _};
+#[cfg(feature = "rudof")]
 use rudof_rdf::rdf_core::{NeighsRDF, Rdf};
+#[cfg(feature = "rudof")]
 use sparql_service::RdfData;
+#[cfg(feature = "rudof")]
 use std::collections::{HashMap, HashSet};
 
 /// How deep caller Turtle may nest RDF 1.2 triple terms and reified triples (`<<( … )>>`,
@@ -73,6 +77,7 @@ pub const MAX_SHAPE_DEPTH: usize = 64;
 /// thread, is what refuses.
 pub const MAX_DATA_RECURSION: usize = 16_384;
 
+#[cfg(feature = "rudof")]
 /// The stack reserved for each level of [`MAX_DATA_RECURSION`] the data reaches, on top of the
 /// validation thread's own: 16 KiB in a release build, 64 KiB with `debug_assertions` on.
 /// rudof 0.3.24 spent ~3.7 KiB a level in release and ~15 KiB in a debug build (a 2,250-link
@@ -85,6 +90,7 @@ const RECURSION_STACK_PER_LEVEL: usize = if cfg!(debug_assertions) {
     16 << 10
 };
 
+#[cfg(feature = "rudof")]
 /// The stack the validator needs on top of its own for `levels` of recursion along the data
 /// (what [`data_recursion`] returned).
 pub(crate) fn recursion_stack(levels: usize) -> usize {
@@ -187,11 +193,16 @@ pub fn check_turtle_nesting(text: &str, arg: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "rudof")]
 const SH: &str = "http://www.w3.org/ns/shacl#";
+#[cfg(feature = "rudof")]
 const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
+#[cfg(feature = "rudof")]
 const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
+#[cfg(feature = "rudof")]
 const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
 
+#[cfg(feature = "rudof")]
 /// What following one edge costs rudof, which decides what a CYCLE through it means.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Edge {
@@ -206,6 +217,7 @@ enum Edge {
     Inverse,
 }
 
+#[cfg(feature = "rudof")]
 /// What a predicate means to the walk.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -224,6 +236,7 @@ enum Role {
     OperatorList,
 }
 
+#[cfg(feature = "rudof")]
 /// The [`Role`] of `predicate`, or `None` when the walk ignores it.
 fn role(predicate: &str) -> Option<Role> {
     match predicate {
@@ -249,6 +262,7 @@ fn role(predicate: &str) -> Option<Role> {
     })
 }
 
+#[cfg(feature = "rudof")]
 /// Refuse a shapes graph whose shape references and paths nest deeper than
 /// [`MAX_SHAPE_DEPTH`], or whose paths form a cycle — walking it iteratively, before rudof's
 /// recursive parser and compiler see it.
@@ -288,6 +302,7 @@ pub(crate) fn check_shapes_structure(shapes: &RdfData) -> Result<Structure> {
     Ok(structure)
 }
 
+#[cfg(feature = "rudof")]
 /// What [`check_shapes_structure`] learns about a shapes graph: its depth, and the recursion
 /// that will follow the DATA, for [`data_recursion`].
 #[derive(Debug, Default)]
@@ -305,11 +320,12 @@ pub(crate) struct Structure {
 
 /// The depth [`check_shapes_structure`] bounds: the most nodes on any chain, a strongly
 /// connected group counting all of its nodes. A cycle through a path edge is an error here.
-#[cfg(test)]
+#[cfg(all(test, feature = "rudof"))]
 pub(crate) fn shapes_depth(shapes: &RdfData) -> Result<usize> {
     Ok(analyze(shapes)?.depth)
 }
 
+#[cfg(feature = "rudof")]
 /// The walk behind [`check_shapes_structure`] and [`shapes_depth`].
 fn analyze(shapes: &RdfData) -> Result<Structure> {
     let bad = |e: String| Error::Endpoint(format!("urn:shacl:validate: shapes graph: {e}"));
@@ -500,6 +516,7 @@ fn analyze(shapes: &RdfData) -> Result<Structure> {
     Ok(structure)
 }
 
+#[cfg(feature = "rudof")]
 /// Refuse a data graph that validation against `shapes` could recurse through deeper than
 /// [`MAX_DATA_RECURSION`], walking it iteratively before rudof's validator does; otherwise
 /// return how deep it could go, for [`recursion_stack`].
@@ -587,6 +604,7 @@ pub(crate) fn data_recursion(data: &RdfData, shapes: &Structure) -> Result<usize
     Ok(levels)
 }
 
+#[cfg(feature = "rudof")]
 /// Strongly connected components of `adj` by Tarjan's algorithm, run with an explicit stack
 /// (a recursive walk here would be the very failure this module exists to stop). Returns each
 /// node's component number and the number of components; a component is numbered after every
@@ -647,22 +665,10 @@ fn strongly_connected(adj: &[Vec<(usize, Edge)>]) -> (Vec<usize>, usize) {
     (comp, count)
 }
 
+/// The Turtle nesting scan, which both engines run before parsing anything.
 #[cfg(test)]
-mod tests {
+mod nesting_tests {
     use super::*;
-    use rudof_rdf::rdf_core::RDFFormat;
-    use rudof_rdf::rdf_impl::ReaderMode;
-
-    const HEAD: &str = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
-                        @prefix ex: <http://example.org/> .\n";
-
-    fn graph(ttl: &str) -> RdfData {
-        RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default()).unwrap()
-    }
-
-    fn depth(body: &str) -> Result<usize> {
-        shapes_depth(&graph(&format!("{HEAD}{body}")))
-    }
 
     fn nested(n: usize) -> String {
         format!("{}ex:o{}", "<<( ex:s ex:p ".repeat(n), " )>>".repeat(n))
@@ -727,6 +733,24 @@ mod tests {
         ] {
             assert!(check_turtle_nesting(&text, "data").is_err(), "{text}");
         }
+    }
+}
+
+#[cfg(all(test, feature = "rudof"))]
+mod tests {
+    use super::*;
+    use rudof_rdf::rdf_core::RDFFormat;
+    use rudof_rdf::rdf_impl::ReaderMode;
+
+    const HEAD: &str = "@prefix sh: <http://www.w3.org/ns/shacl#> .\n\
+                        @prefix ex: <http://example.org/> .\n";
+
+    fn graph(ttl: &str) -> RdfData {
+        RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default()).unwrap()
+    }
+
+    fn depth(body: &str) -> Result<usize> {
+        shapes_depth(&graph(&format!("{HEAD}{body}")))
     }
 
     #[test]

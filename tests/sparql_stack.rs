@@ -17,6 +17,9 @@
 //! These tests use only the API that predates the fix (`space()` through a kernel), so they
 //! compile, and fail with the child aborted, against 0.2.0.
 
+// rudof's own behavior (and the guards in front of it), so only a build with rudof has it to test.
+#![cfg(feature = "rudof")]
+
 use futures::executor::block_on;
 use ikigai_core::{ArgRef, Capability, Iri, Kernel, Request, Verb};
 use std::process::Command;

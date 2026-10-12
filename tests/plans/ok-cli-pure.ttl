@@ -1,0 +1,10 @@
+# Source: ikigai-cli crates/ikigai-engine/tests/plan_eval.rs, `a_pure_plan_is_cached_and_a_writing_one_is_not` (the `pure` plan).
+# expect: conforms
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+<urn:plan:pure> a ik:Process ;
+    ik:step <urn:plan:pure:step:1> , <urn:plan:pure:step:2> ;
+    ik:result <urn:plan:pure:step:2> .
+<urn:plan:pure:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:cms:bookmarks> .
+<urn:plan:pure:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:pipeFrom <urn:plan:pure:step:1> .

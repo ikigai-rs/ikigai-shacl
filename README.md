@@ -48,7 +48,8 @@ golden-thread set is correct); shapes by reference make the report exactly as ca
 as the shapes resource, inheriting its thread, so cutting that thread recomputes the
 report. Both walks are clean.
 
-Built on rudof's [`shacl`](https://crates.io/crates/shacl) crate. It links natively (CLI +
+By default built on rudof's [`shacl`](https://crates.io/crates/shacl) crate (a build without
+rudof serves the same resource from a subset validator: see *Two validators* below). It links natively (CLI +
 servers), and with the `module` feature it also builds as a lazy-loadable WASM module:
 
 ```text
@@ -153,6 +154,84 @@ from `upstream-watch.yml` in the private `ikigai-devtools` repo, not here: a per
 cron is disabled by GitHub after 60 days of repo inactivity, which silences it on
 exactly the quiet repos that need it. devtools is the one repo that is never inactive.
 
+## Two validators: rudof, or a subset with no network stack
+
+`urn:shacl:validate` has two implementations in this crate, chosen by one feature
+(ledger #1176):
+
+| build | validator | what it gives you |
+| --- | --- | --- |
+| default (`rudof` on) | rudof's `shacl` crate | all of SHACL Core and SHACL-SPARQL's `sh:select`, behind the bounds below |
+| `default-features = false` | `core_shacl`, the subset validator | the subset below, with no rudof, no network stack, and no recursion over either graph |
+| `module` | rudof | the lazy-loadable WASM module, unchanged (`module` implies `rudof`) |
+
+With both compiled (the default build), the endpoint uses rudof, so no consumer's behavior
+changes. `ikigai_shacl::validate_report`, `validate_outcome` and `validate_turtle` use the same
+engine the endpoint does; `ikigai_shacl::core_shacl::validate_report` and `validate_turtle`
+are the subset validator in every build.
+
+**Why it exists.** rudof cannot be built without a network stack on native: `rudof_iri` depends
+on reqwest unconditionally, and `rudof_rdf`'s native target turns on oxigraph's `http-client`
+and tokio, so a feature flag on rudof itself could not remove them. And rudof's validator
+recurses along both graphs, so a deep enough input aborts the process that runs it (the bounds
+below refuse those inputs). A host that only validates shapes it ships, such as a plan door
+checking a plan against `ikigai_vocab::SHAPES`, links the subset instead: the reduced build is
+92 packages against the default's 249, 5 more than `ikigai-store` alone with default features
+off (the `futures` family), with no reqwest, no tokio, no rudof and no `http-client` anywhere.
+
+**The subset**, which covers every construct in `ikigai_vocab::SHAPES` and a few cheap
+neighbors:
+
+- targets: `sh:targetClass` (instances through `rdfs:subClassOf*`), an implicit class target
+  (a shape that is also an `rdfs:Class`), `sh:targetNode`, `sh:targetSubjectsOf`,
+  `sh:targetObjectsOf`;
+- node shapes, and property shapes whose `sh:path` is one predicate IRI; `sh:property`,
+  `sh:node`, `sh:message` (its `{?this}`, `{?value}` and `{?path}` templates resolved);
+- `sh:class`, `sh:datatype` (a literal must also be well formed for the XSD numeric, boolean,
+  date, time and duration types), `sh:nodeKind`, `sh:minCount`, `sh:maxCount`, `sh:in`,
+  `sh:hasValue`, `sh:pattern` with `sh:flags`, `sh:minLength`, `sh:maxLength`,
+  `sh:minInclusive`, `sh:maxInclusive`, `sh:minExclusive`, `sh:maxExclusive`;
+- SHACL-SPARQL: `sh:sparql` with `sh:select`, `sh:message`, and `sh:prefixes` (through
+  `sh:declare`, `sh:prefix`, `sh:namespace` and `owl:imports`); `$this` is pre-bound by
+  substitution, never written into the query text, and `$PATH` is the shape's predicate;
+- the non-validating annotations `sh:name`, `sh:description`, `sh:order` and `sh:group`.
+
+**It refuses everything else, by name.** Any other term of the SHACL namespace, as a predicate
+or as the class of an `rdf:type` (`sh:or`, `sh:not`, `sh:closed`, `sh:severity`,
+`sh:deactivated`, `sh:ask`, `sh:target`, `sh:SPARQLTarget`, …), a complex property path, a
+recursive shape (a cycle of `sh:node` / `sh:property` references), an RDF 1.2 triple term, and a
+malformed parameter are each a typed `InvalidArgument` on `shapes` (or `data`) naming what was
+refused, before anything is validated. A bound must refuse, never truncate: a constraint the
+subset skipped would make data look conforming when it is not.
+
+**No recursion.** The shapes graph is compiled iteratively; a cycle of references is found with
+an explicit work list; conformance to a `sh:node` shape is computed bottom-up from an explicit
+stack; subclass closures and RDF lists are walked with a visited set.
+`tests/core_subset.rs` validates a 20,000-shape `sh:node` chain over a 20,000-link chain of
+data, and 20,000 nested property shapes, from a 2 MiB thread in a child process, and refuses
+ledger #1326's recursive shape over a 30,000-link chain as a value.
+
+**Its SPARQL has the rudof path's guards**: each `sh:select` is checked against
+`ikigai_store::limits` (size and nesting) and `budget::check_query` (the algebra) before it is
+parsed, refused when it holds a `SERVICE` anywhere, parsed on a stack sized for it, and
+evaluated through `ikigai_store::service::evaluator()`, which refuses every service. The whole
+validation runs inside an `ikigai_store::budget::EvaluationBudget`: the store's 5 s base for an
+ordinary caller (more by a `urn:cap:store:budget:<ms>` grant, the 120 s ceiling for root), past
+which the caller is answered with a typed timeout and the evaluation is told to stop.
+
+**Held to rudof's verdicts.** `tests/differential.rs` runs both validators over `tests/plans/`
+(valid plans copied from ikigai-vocab's fixtures and ikigai-cli's plan tests, and a plan that
+breaks each shape and each SPARQL constraint of `ikigai_vocab::SHAPES`, 78 in all, every file
+naming its source) and over the parity corpus, and requires the same `sh:conforms` and the same
+results as (focus node, path, component, severity, value, source shape), read back from each
+engine's report graph, plus the same JSON face. Only two things differ, and both are stated
+there: a node minted under the report's skolem scheme compares as "a blank node" (the content
+id covers the whole report, messages included), and a default message (a constraint with no
+`sh:message`) is each engine's own wording. One divergence is recorded rather than hidden: a
+plan whose `ik:Process`, `ik:Step` or `ik:Fork` is a blank node makes rudof fail outright (it
+writes the focus node into `VALUES ?this { _:b0 }`, which SPARQL does not allow), while the
+subset reports it as not conforming; neither lets the plan run.
+
 ## Parity
 
 Both implementations are held to a single shared corpus:
@@ -170,6 +249,7 @@ Same corpus, same expected ⇒ the two validators agree by construction. CI runs
 ## Test
 
 ```sh
-cargo test                      # native rudof, the parity corpus, and the conformance walks
+cargo test                      # rudof and the subset: parity corpus, conformance walks, differential
+cargo test --no-default-features   # the subset build alone, as a host without rudof links it
 cd js-parity && npm ci && npm test   # shacl-engine parity
 ```

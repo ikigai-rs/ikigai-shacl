@@ -17,6 +17,45 @@ jobs:
       wasm-lib: true
       wasm-features: module
 
+  # The subset build: `default-features = false`, what a host without rudof links (ledger #1176).
+  # The shared gates build the default features only, and rust.yml's `features` input can add
+  # features but cannot turn the default off, so without this job nothing would lint, test or
+  # document the subset validator as such a host builds it, nor check that it stays free of the
+  # network stack it exists to avoid.
+  subset:
+    name: subset validator (no default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - run: cargo clippy --no-default-features --lib --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test --no-default-features
+      - run: cargo doc --no-deps --no-default-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The point of the feature: no rudof, no HTTP client, no async runtime. A positive check
+      # (the tree must print, and must not name them), so a failing `cargo tree` cannot read as
+      # "absent"; and oxigraph's `http-client` feature must be off.
+      - name: the subset build links no rudof and no network stack
+        run: |
+          tree=$(cargo tree --no-default-features -e normal --prefix none)
+          grep -q '^ikigai-shacl ' <<<"$tree"
+          if grep -E '^(reqwest|hyper|tokio|rustls|oxhttp|rayon|shacl|sparql_service|rudof_[a-z_]+) ' <<<"$tree"; then
+            echo "::error::the --no-default-features graph links rudof or a network stack"
+            exit 1
+          fi
+          features=$(cargo tree --no-default-features -e features -i oxigraph)
+          grep -q '^oxigraph ' <<<"$features"
+          if grep -q 'http-client' <<<"$features"; then
+            echo "::error::the --no-default-features graph turns on oxigraph's http-client"
+            exit 1
+          fi
+
   # The other half of the parity contract: shacl-engine (the browser validator) must produce
   # the same outcome as rudof for every case in tests/corpus/ — both assert the same
   # expected.json. See js-parity/parity.test.mjs.

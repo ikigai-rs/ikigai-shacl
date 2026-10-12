@@ -1,0 +1,23 @@
+# Source: derived for ikigai-shacl from ikigai-vocab tests/fixtures/plan-linkcheck.ttl (a fork, an argument and a parameter).
+# expect: conforms
+
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<urn:plan:p> a ik:Process ;
+    ik:input <urn:plan:p:input:root> ;
+    ik:output "text/plain" ;
+    ik:requires <urn:cap:net:*> ;
+    ik:step <urn:plan:p:step:1> , <urn:plan:p:step:2> , <urn:plan:p:step:3> ;
+    ik:result <urn:plan:p:fork:1> .
+<urn:plan:p:input:root> ik:inputName "root" ; ik:source "argument" ; ik:required false ;
+    ik:class <http://www.w3.org/2000/01/rdf-schema#Resource> ; ik:default "urn:cms:graph" .
+<urn:plan:p:step:1> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:cms:bookmarks> ; ik:binds "urls" ;
+    ik:argument <urn:plan:p:step:1:arg:root> .
+<urn:plan:p:step:1:arg:root> a ik:Argument ; ik:inputName "root" ; ik:ref <urn:plan:p:var:root> .
+<urn:plan:p:fork:1> a ik:Fork ; ik:upstream <urn:plan:p:step:1> ; ik:join "newline" .
+<urn:plan:p:step:2> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:forkOf <urn:plan:p:fork:1> ; ik:order 1 ;
+    ik:argument <urn:plan:p:step:2:arg:count> .
+<urn:plan:p:step:2:arg:count> a ik:Argument ; ik:inputName "count" ; ik:value "lines" .
+<urn:plan:p:step:3> a ik:Step ; ik:verb "Source" ; ik:resolves <urn:text:wc> ;
+    ik:forkOf <urn:plan:p:fork:1> ; ik:order 2 .
