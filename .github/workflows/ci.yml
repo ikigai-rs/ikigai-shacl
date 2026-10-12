@@ -33,5 +33,8 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: js-parity/package-lock.json
+      # `npm ci` warns that sparqljs 3.7.4 is deprecated. Kept on purpose: upstream archived it for
+      # Traqula and no supported release exists; it arrives only through componentsjs 6.4.0 (the
+      # latest), whose `rdf-parse ^4` brings sparqlalgebrajs, and this job never loads it (ledger #1346).
       - run: npm ci
       - run: npm test
