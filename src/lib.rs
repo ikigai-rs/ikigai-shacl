@@ -43,7 +43,7 @@ use shacl::validator::{ShaclConfig, ShaclValidationMode};
 use sparql_service::RdfData;
 
 mod depth;
-pub use depth::{MAX_SHAPE_DEPTH, MAX_TURTLE_NESTING};
+pub use depth::{MAX_DATA_RECURSION, MAX_SHAPE_DEPTH, MAX_TURTLE_NESTING};
 
 /// The name [`space`] claims: `urn:iki:space:shacl`.
 pub const SPACE_ID: &str = "urn:iki:space:shacl";
@@ -73,16 +73,20 @@ fn parse_data(ttl: &str, role: &str) -> Result<RdfData> {
 /// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema, refusing any
 /// SPARQL literal in it past the bounds, and any structure nested past [`MAX_SHAPE_DEPTH`],
 /// before rudof's parser sees the graph. Recursive in rudof even within the bounds (an RDF
-/// list is parsed one call per element), so [`run`] calls it on a sized stack.
-fn compile_shapes(ttl: &str) -> Result<IRSchema> {
+/// list is parsed one call per element), so [`run`] calls it on a sized stack. Also returns
+/// what the structural walk found, for bounding the recursion that follows the data
+/// ([`depth::data_recursion`]).
+fn compile_shapes(ttl: &str) -> Result<(IRSchema, depth::Structure)> {
     let shapes = parse_data(ttl, SHAPES_ARG)?;
     bound_literals(&shapes)?;
-    depth::check_shapes_structure(&shapes)?;
+    let structure = depth::check_shapes_structure(&shapes)?;
     let ast = ShaclParser::new(shapes)
         .parse()
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes parse error: {e}")))?;
-    ast.try_into()
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes compile error: {e}")))
+    let schema = ast
+        .try_into()
+        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: shapes compile error: {e}")))?;
+    Ok((schema, structure))
 }
 
 // ---------------------------------------------------------------------------
@@ -735,13 +739,14 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 /// because LENGTH recurses too, and length is not refused: compiling on a thread sized from
 /// the shapes text (rudof parses an RDF list one call per element), and checking every query
 /// for a `SERVICE` ([`refuse_service_in`]), parsing the data and validating on one sized for the
-/// longest query, with rudof's validator on a one-thread pool of that size ([`on_rudof_pool`]).
-/// On wasm there is no thread and both run inline.
+/// longest query, with rudof's validator on a one-thread pool of that size ([`on_rudof_pool`]),
+/// grown by what the recursion that follows the data can reach once the data is parsed
+/// ([`depth::data_recursion`], ledger #1326). On wasm there is no thread and both run inline.
 fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
-    let (schema, queries) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
-        let schema = compile_shapes(shapes_ttl)?;
+    let (schema, structure, queries) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
+        let (schema, structure) = compile_shapes(shapes_ttl)?;
         let queries = bound_queries(&schema)?;
-        Ok((schema, queries))
+        Ok((schema, structure, queries))
     })?;
     let longest = queries.iter().max_by_key(|q| q.len()).cloned();
     ikigai_store::limits::on_sparql_stack(longest.as_deref().unwrap_or(""), move || {
@@ -750,17 +755,23 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
             refuse_service_in(query)?;
         }
         let data = parse_data(data_ttl, "data")?;
+        // A shape that refers back to itself along a path is validated one call per link of
+        // the data: refuse past the bound, and grow the validator's stack for what it admits.
+        let levels = depth::data_recursion(&data, &structure)?;
         let mut validator: DataValidation = data.into();
         // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see
         // the upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior:
         // violations kept, conformance evidence off, cautious/LFP recursion semantics.
         let config = ShaclConfig::default();
-        // The pool's thread is sized like this one, for the longest query.
+        // The pool's thread is sized like this one, for the longest query, plus the recursion
+        // the data admits.
         let longest = queries
             .iter()
             .max_by_key(|q| q.len())
             .map_or("", String::as_str);
-        on_rudof_pool(longest, || {
+        let stack = ikigai_store::limits::sparql_stack_size(longest)
+            .saturating_add(depth::recursion_stack(levels));
+        on_rudof_pool(stack, || {
             validator
                 .validate(&schema, &ShaclValidationMode::Native, &config)
                 .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
@@ -768,9 +779,9 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
     })
 }
 
-/// Run rudof's validator on a ONE-thread rayon pool whose thread has the stack `text` needs
-/// (`limits::sparql_stack_size`, the size `on_sparql_stack` gives), rather than on rayon's
-/// global pool (ledger #1102).
+/// Run rudof's validator on a ONE-thread rayon pool whose thread has `stack` bytes (at least
+/// `limits::sparql_stack_size` of the longest query, the size `on_sparql_stack` gives), rather
+/// than on rayon's global pool (ledger #1102).
 ///
 /// rudof validates each topological level of shapes with `par_iter_mut`. A level of one shape
 /// is not split and runs on the calling thread, already sized; a level of two or more is, and
@@ -781,14 +792,13 @@ fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
 /// level, which it only ever had for levels of two or more. ⚠ It works only because `rayon` here
 /// is the same `rayon-core` rudof's `par_iter_mut` resolves (see Cargo.toml). On wasm there is no
 /// thread, as for `on_sparql_stack`, and the work runs inline.
-fn on_rudof_pool<T, F>(text: &str, work: F) -> Result<T>
+fn on_rudof_pool<T, F>(stack: usize, work: F) -> Result<T>
 where
     T: Send,
     F: FnOnce() -> Result<T> + Send,
 {
     #[cfg(not(target_family = "wasm"))]
     {
-        let stack = ikigai_store::limits::sparql_stack_size(text);
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .stack_size(stack)
@@ -804,7 +814,7 @@ where
     }
     #[cfg(target_family = "wasm")]
     {
-        let _ = text;
+        let _ = stack;
         work()
     }
 }
@@ -1283,7 +1293,7 @@ mod tests {
   sh:sparql [ sh:prefixes :decls ;
     sh:select "SELECT $this ?value where { $this $PATH ?value }" ] .
 :decls sh:declare [ sh:prefix "ex" ; sh:namespace "http://example.org/"^^xsd:anyURI ] ."#;
-        let queries = bound_queries(&compile_shapes(shapes).unwrap()).unwrap();
+        let queries = bound_queries(&compile_shapes(shapes).unwrap().0).unwrap();
         assert_eq!(
             queries,
             ["PREFIX ex: <http://example.org/>\n\
@@ -1298,7 +1308,7 @@ mod tests {
     #[test]
     fn a_path_is_refused_one_level_past_the_bound_and_rendered_at_it() {
         // A predicate path, taken from a compiled shape (rudof's `IriS` is not re-exported).
-        let schema = compile_shapes(SHAPES).unwrap();
+        let schema = compile_shapes(SHAPES).unwrap().0;
         let mut path = schema
             .iter()
             .find_map(|(_, shape)| shape.path().cloned())

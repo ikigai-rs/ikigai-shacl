@@ -260,6 +260,133 @@ fn case(name: &str, n: usize) -> (String, String) {
                     .collect::<String>()
             ),
         ),
+        // ---- ledger #1326: every other way caller Turtle can nest.
+        //
+        // Blank-node property lists nested in the DATA, under a shape that does not recurse.
+        "data-blank-nest" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n\
+                 ex:a a ex:Person ; ex:p {}ex:b{} .\n",
+                "[ ex:q ".repeat(n),
+                " ]".repeat(n)
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:Person ;\n  \
+                 sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n"
+            ),
+        ),
+        // The same nesting in the SHAPES argument, under a predicate SHACL gives no meaning.
+        "shapes-blank-nest" => (
+            DATA.to_string(),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:Person ;\n  \
+                 sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n\
+                 ex:S ex:note {}ex:o{} .\n",
+                "[ ex:q ".repeat(n),
+                " ]".repeat(n)
+            ),
+        ),
+        // Nested collections in the SHAPES argument, under a predicate SHACL gives no meaning.
+        "shapes-collections" => (
+            DATA.to_string(),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:Person ;\n  \
+                 sh:property [ sh:path ex:p ; sh:minCount 1 ] .\n\
+                 ex:S ex:note {}{} .\n",
+                "(".repeat(n),
+                ")".repeat(n)
+            ),
+        ),
+        // `data-chain` written as nested blank nodes: the depth is one Turtle term.
+        "data-blank-chain" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n\
+                 ex:n0 ex:next {}ex:end{} .\n",
+                "[ ex:next ".repeat(n),
+                " ]".repeat(n)
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                 sh:property [ sh:path ex:next ; sh:node ex:S ] .\n"
+            ),
+        ),
+        // `data-chain` followed backwards, through an inverse path.
+        "data-inverse-chain" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n{}",
+                (0..n)
+                    .map(|i| format!("ex:n{} ex:next ex:n{i} .\n", i + 1))
+                    .collect::<String>()
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                 sh:property [ sh:path [ sh:inversePath ex:next ] ; sh:node ex:S ] .\n"
+            ),
+        ),
+        // `data-chain` closed into a ring: rudof cuts a (node, shape) pair it is already inside.
+        "data-ring" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n{}",
+                (0..n)
+                    .map(|i| format!("ex:n{i} ex:next ex:n{} .\n", (i + 1) % n))
+                    .collect::<String>()
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                 sh:property [ sh:path ex:next ; sh:node ex:S ] .\n"
+            ),
+        ),
+        // A transitive path over a long chain, with no recursive shape: rudof's path evaluator.
+        "data-star-path" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n{}",
+                (0..n)
+                    .map(|i| format!("ex:n{i} ex:next ex:n{} .\n", i + 1))
+                    .collect::<String>()
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                 sh:property [ sh:path [ sh:oneOrMorePath ex:next ] ; sh:minCount 1 ] .\n"
+            ),
+        ),
+        // A long `rdfs:subClassOf` chain in the data, under `sh:targetClass` and `sh:class`,
+        // which both follow subclasses.
+        "data-subclass" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n\
+                 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                 ex:a a ex:C{n} ; ex:p ex:a .\n{}",
+                (0..n)
+                    .map(|i| format!("ex:C{} rdfs:subClassOf ex:C{i} .\n", i + 1))
+                    .collect::<String>()
+            ),
+            format!(
+                "{HEAD}ex:S a sh:NodeShape ; sh:targetClass ex:C0 ;\n  \
+                 sh:property [ sh:path ex:p ; sh:class ex:C0 ] .\n"
+            ),
+        ),
+        // `data-chain` with the recursion written through each other shape reference rudof
+        // follows at a value node.
+        "data-chain-and" | "data-chain-or" | "data-chain-xone" | "data-chain-qualified" => {
+            let inner = match name {
+                "data-chain-and" => "sh:and ( ex:S )",
+                "data-chain-or" => "sh:or ( ex:S )",
+                "data-chain-xone" => "sh:xone ( ex:S )",
+                _ => "sh:qualifiedValueShape ex:S ; sh:qualifiedMinCount 0",
+            };
+            (
+                format!(
+                    "@prefix ex: <http://example.org/> .\n{}",
+                    (0..n)
+                        .map(|i| format!("ex:n{i} ex:next ex:n{} .\n", i + 1))
+                        .collect::<String>()
+                ),
+                format!(
+                    "{HEAD}ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                     sh:property [ sh:path ex:next ; {inner} ] .\n"
+                ),
+            )
+        }
         other => panic!("no probe named {other}"),
     }
 }
@@ -339,15 +466,23 @@ fn probe(name: &str, n: usize) -> String {
 ///
 /// Ledger #992 added the rows below `data-collections`, and with them the depth that is not
 /// SPARQL: nested shapes, deep and cyclic paths, `owl:imports` chains and nested triple terms
-/// are refused now, and long lists run on the sized compile stack. ⚠ One row still DIES, by
-/// design of this arc rather than oversight: `data-chain`, a recursive shape over a 3000-link
-/// chain in the DATA, which rudof's validator follows one call per link (it dies in a release
-/// build too). That depth is the data's, not the shapes graph's, and is reported, not fixed.
+/// are refused now, and long lists run on the sized compile stack. Ledger #1326 added the rows
+/// from `data-blank-nest` on, every other way caller Turtle can nest, and closed the row #992
+/// left open: `data-chain`, a recursive shape over a chain in the DATA, which rudof's validator
+/// follows one call per link, DIED at 2,500 links in a release build (16 MiB) and at 3,000 in a
+/// debug build (80 MiB), as a ring, an inverse path, nested blank nodes and each other shape
+/// reference did. It runs now on a stack grown for what the data reaches, and is refused past
+/// `MAX_DATA_RECURSION`. Blank-node property lists and collections nested 200,000 deep in
+/// either graph, a 30,000-link `sh:oneOrMorePath` and a 30,000-link `rdfs:subClassOf` chain
+/// never died: oxttl and those parts of rudof are iterative.
 /// ⚠ And in a DEBUG build `list-in` at 30,000 elements dies on the sized stack; a release
 /// build runs it. Length is carried by the stack, which is a release-build guarantee (see
 /// `ikigai_store::limits`).
 ///
 ///     cargo test --test sparql_stack -- --ignored --nocapture survey
+///
+/// `IKIGAI_SHACL_SURVEY=a,b` limits it to the probes named, `IKIGAI_SHACL_SURVEY_SIZES=n,m`
+/// replaces the sizes.
 #[test]
 #[ignore]
 fn survey() {
@@ -370,14 +505,41 @@ fn survey() {
         "list-or",
         "data-chain",
         "imports-chain",
+        "data-blank-nest",
+        "shapes-blank-nest",
+        "shapes-collections",
+        "data-blank-chain",
+        "data-inverse-chain",
+        "data-ring",
+        "data-star-path",
+        "data-subclass",
+        "data-chain-and",
+        "data-chain-or",
+        "data-chain-xone",
+        "data-chain-qualified",
     ] {
+        // `IKIGAI_SHACL_SURVEY=a,b` surveys only the probes named.
+        if let Ok(only) = std::env::var("IKIGAI_SHACL_SURVEY") {
+            if !only.split(',').any(|o| o == name) {
+                continue;
+            }
+        }
         let sizes: &[usize] = match name {
             "path-cycle" => &[1],
             "not-nest" => &[50, 70, 76, 80, 100, 300],
-            "list-in" | "list-or" | "data-chain" => &[50, 300, 3000, 30000],
+            "list-in" | "list-or" | "data-chain" | "data-blank-chain" | "data-inverse-chain"
+            | "data-ring" => &[50, 300, 1000, 3000, 30000],
+            "data-blank-nest" | "shapes-blank-nest" | "shapes-collections" => {
+                &[50, 3000, 30000, 200000]
+            }
             _ => &[50, 300, 3000],
         };
-        for &n in sizes {
+        // `IKIGAI_SHACL_SURVEY_SIZES=100,200` replaces the sizes.
+        let chosen: Vec<usize> = match std::env::var("IKIGAI_SHACL_SURVEY_SIZES") {
+            Ok(list) => list.split(',').map(|n| n.parse().unwrap()).collect(),
+            Err(_) => sizes.to_vec(),
+        };
+        for &n in &chosen {
             let line = match try_probe(name, n) {
                 Ok(said) => said.chars().take(160).collect::<String>(),
                 Err(died) => format!("DIED {}", died.chars().take(160).collect::<String>()),
@@ -565,6 +727,64 @@ fn long_lists_run_on_the_compile_stack() {
     // is not refused; it runs on the stack compiling is given.
     for name in ["list-in", "list-or"] {
         let outcome = probe(name, 3000);
+        assert!(outcome.starts_with("ok "), "{name}: {outcome}");
+    }
+}
+
+// ------------------------------------------------------------------ ledger #1326: the data's depth
+
+/// The bound, restated as `BOUND` is; a unit test in `src/depth.rs` pins the constant.
+const DATA_BOUND: usize = 16_384;
+
+/// The largest `data-chain` the bound admits: `ex:S` and its property shape are the recursive
+/// group (2), the shapes graph is 3 deep (ex:S, the property shape, the path), and a chain of
+/// `n` links has `n + 1` nodes, so `3 + 2 * (n + 1)` levels.
+const LONGEST_CHAIN: usize = (DATA_BOUND - 3) / 2 - 1;
+
+#[test]
+fn recursion_along_the_data_runs_and_aborts_nothing() {
+    // Each of these aborted the process at 3,000 links: the validator recursed once per link on
+    // a 16 MiB thread (80 MiB in a debug build). A ring is cut where it closes and recursed as
+    // deep as a chain.
+    for name in [
+        "data-chain",
+        "data-ring",
+        "data-blank-chain",
+        "data-inverse-chain",
+        "data-chain-and",
+        "data-chain-or",
+        "data-chain-xone",
+        "data-chain-qualified",
+    ] {
+        let outcome = probe(name, 3000);
+        assert!(outcome.starts_with("ok "), "{name}: {outcome}");
+    }
+}
+
+#[test]
+fn recursion_along_the_data_runs_at_the_bound_and_is_refused_past_it() {
+    let outcome = probe("data-chain", LONGEST_CHAIN);
+    assert!(outcome.contains("\"conforms\": true"), "{outcome}");
+    for (name, n) in [("data-chain", LONGEST_CHAIN + 1), ("data-ring", 20_000)] {
+        let outcome = probe(name, n);
+        assert!(
+            refused_as(&outcome, "data", "MAX_DATA_RECURSION"),
+            "{name} {n}: {outcome}"
+        );
+    }
+}
+
+#[test]
+fn nesting_the_turtle_parser_carries_is_not_refused() {
+    // oxttl parses nested blank nodes and collections iteratively: 200,000 levels in either
+    // argument, a few hundred KB, validate without a bound.
+    for name in [
+        "data-blank-nest",
+        "shapes-blank-nest",
+        "shapes-collections",
+        "data-collections",
+    ] {
+        let outcome = probe(name, 200_000);
         assert!(outcome.starts_with("ok "), "{name}: {outcome}");
     }
 }
