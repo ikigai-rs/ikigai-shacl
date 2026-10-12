@@ -92,12 +92,17 @@ The recursion that is not SPARQL is bounded too, since 0.3.1 (ledger #992): nest
 past 64 levels (`MAX_SHAPE_DEPTH`), nested RDF 1.2 triple terms in either graph past 64
 (`MAX_TURTLE_NESTING`), and a long RDF list compiles on a stack sized from the shapes text.
 
-⚠ **Not bounded: depth that is the DATA's.** A shape that follows itself along a path
-(`sh:property [ sh:path ex:next ; sh:node ex:S ]` on `ex:S`) is walked by rudof's validator one
-call per link of the data, so a chain of a few thousand links in `data` still overflows the
-validation thread and aborts the host. Nothing in the shapes graph is deep there, so no bound
-on it can refuse the case. `cargo test --test sparql_stack -- --ignored --nocapture survey`
-prints every case.
+Depth that is the DATA's is bounded too, since ledger #1326. A shape that follows itself along
+a path (`sh:property [ sh:path ex:next ; sh:node ex:S ]` on `ex:S`) is walked by rudof's
+validator one call per link of the data, and a chain of 2,500 links (a ring too: rudof cuts it
+where it closes) aborted the host. Nothing in the shapes graph is deep there, so the bound
+reads both graphs: the shapes graph's recursive groups that move along a path, and the data's
+longest chain of links through those paths' predicates (a cycle counting all of its nodes).
+Past 16,384 nested shape validations (`MAX_DATA_RECURSION`, about 8,000 people under a
+self-recursive `foaf:knows` shape) the data is refused; under it, validation runs on a stack
+grown for what the data can reach. Turtle nesting the parser carries (blank nodes and
+collections 200,000 deep, in either graph) is not refused: oxttl parses it iteratively.
+`cargo test --test sparql_stack -- --ignored --nocapture survey` prints every case.
 
 ## Caller SPARQL never reaches the network
 
