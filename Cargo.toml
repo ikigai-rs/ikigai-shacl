@@ -111,6 +111,16 @@ oxrdf = { version = "0.3.3", features = ["rdf-12"] }
 version = "0.3.1"
 optional = true
 [dependencies.wasm-bindgen]
+# EXACT on purpose (ledger #1342, after #1193), unlike every other pin here. The `module`
+# feature is built with THIS crate as the root package and post-processed by a `wasm-bindgen`
+# CLI: ikigai-web-demo's `.github/workflows/pages.yml` checks this repo out at SHACL_REV,
+# builds it with no lock (`Cargo.lock` is gitignored here), and runs `wasm-bindgen-cli@0.2.108`
+# over `ikigai_shacl.wasm`. The CLI refuses a wasm whose library carries a different bindgen
+# SCHEMA_VERSION (0.2.108's is 0.2.107; 0.2.128 and 0.2.129 carry 0.2.128), and under a caret
+# the fresh resolve takes the newest 0.2.x. So this pin is the only thing tying the two
+# together: bump it in step with that CLI pin (and the other `=0.2.108` crates beside it, which
+# the same page builds with the same CLI), never alone. It costs native consumers nothing: the
+# dependency is optional and only `module` enables it.
 version = "=0.2.108"
 optional = true
 [dependencies.wasm-bindgen-futures]
