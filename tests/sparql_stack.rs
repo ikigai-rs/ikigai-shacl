@@ -475,9 +475,11 @@ fn probe(name: &str, n: usize) -> String {
 /// `MAX_DATA_RECURSION`. Blank-node property lists and collections nested 200,000 deep in
 /// either graph, a 30,000-link `sh:oneOrMorePath` and a 30,000-link `rdfs:subClassOf` chain
 /// never died: oxttl and those parts of rudof are iterative.
-/// ⚠ And in a DEBUG build `list-in` at 30,000 elements dies on the sized stack; a release
-/// build runs it. Length is carried by the stack, which is a release-build guarantee (see
-/// `ikigai_store::limits`).
+/// Length is carried by the stack, in a debug build too: `list-in` at 30,000 elements DIED in
+/// a debug build against ikigai-store 0.2.9, whose thread sizing was the release one, and runs
+/// since 0.2.10 sized the thread for the build (ledger #1003; this crate requires 0.2.11).
+/// Measured on this file at 4d2aa32 with only ikigai-store moved, 0.2.9 then 0.2.10 (ledger
+/// #1118).
 ///
 ///     cargo test --test sparql_stack -- --ignored --nocapture survey
 ///
@@ -765,7 +767,13 @@ fn recursion_along_the_data_runs_and_aborts_nothing() {
 fn recursion_along_the_data_runs_at_the_bound_and_is_refused_past_it() {
     let outcome = probe("data-chain", LONGEST_CHAIN);
     assert!(outcome.contains("\"conforms\": true"), "{outcome}");
-    for (name, n) in [("data-chain", LONGEST_CHAIN + 1), ("data-ring", 20_000)] {
+    // 30,000 links is ledger #1118's tenfold row: it aborted the `ikigai-shacl-validate` thread
+    // in 0.3.3, in a debug and a release build alike, and is refused as a value since 0.3.4.
+    for (name, n) in [
+        ("data-chain", LONGEST_CHAIN + 1),
+        ("data-chain", 30_000),
+        ("data-ring", 20_000),
+    ] {
         let outcome = probe(name, n);
         assert!(
             refused_as(&outcome, "data", "MAX_DATA_RECURSION"),
