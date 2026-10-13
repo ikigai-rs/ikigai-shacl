@@ -176,8 +176,8 @@ and tokio, so a feature flag on rudof itself could not remove them. And rudof's 
 recurses along both graphs, so a deep enough input aborts the process that runs it (the bounds
 below refuse those inputs). A host that only validates shapes it ships, such as a plan door
 checking a plan against `ikigai_vocab::SHAPES`, links the subset instead: the reduced build is
-92 packages against the default's 249, 5 more than `ikigai-store` alone with default features
-off (the `futures` family), with no reqwest, no tokio, no rudof and no `http-client` anywhere.
+87 packages against the default's 246, nothing beyond what `ikigai-store` alone links with
+default features off, with no reqwest, no tokio, no rudof and no `http-client` anywhere.
 
 **The subset**, which covers every construct in `ikigai_vocab::SHAPES` and a few cheap
 neighbors:
