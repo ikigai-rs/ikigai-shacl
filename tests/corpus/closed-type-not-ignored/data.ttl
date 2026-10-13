@@ -1,0 +1,2 @@
+@prefix ex: <http://example.org/> .
+ex:book1 a ex:Book ; ex:title "Dune" .

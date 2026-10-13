@@ -12,7 +12,7 @@
 //!   targets (a shape that is also an `rdfs:Class`), `sh:targetNode`, `sh:targetSubjectsOf`,
 //!   `sh:targetObjectsOf`.
 //! - **Shapes**: node shapes, and property shapes whose `sh:path` is a single predicate IRI;
-//!   `sh:property`, `sh:node`, `sh:message`.
+//!   `sh:property`, `sh:node`, `sh:message`, and `sh:closed` with `sh:ignoredProperties`.
 //! - **Constraints**: `sh:class`, `sh:datatype`, `sh:nodeKind`, `sh:minCount`, `sh:maxCount`,
 //!   `sh:in`, `sh:hasValue`, `sh:pattern` (with `sh:flags`), `sh:minLength`, `sh:maxLength`,
 //!   `sh:minInclusive`, `sh:maxInclusive`, `sh:minExclusive`, `sh:maxExclusive`.
@@ -84,6 +84,8 @@ const SUPPORTED_PREDICATES: &[&str] = &[
     "path",
     "node",
     "message",
+    "closed",
+    "ignoredProperties",
     // core constraints
     "class",
     "datatype",
@@ -135,6 +137,7 @@ const SHAPE_PREDICATES: &[&str] = &[
     "property",
     "path",
     "node",
+    "closed",
     "class",
     "datatype",
     "nodeKind",
@@ -242,6 +245,9 @@ enum Constraint {
     Range(Range, Literal),
     Node(ShapeId),
     Sparql(Box<SparqlConstraint>),
+    /// `sh:closed true`: the predicates a value node may have, which are the paths of the
+    /// shape's own `sh:property` shapes and its `sh:ignoredProperties`.
+    Closed(HashSet<NamedNode>),
 }
 
 struct SparqlConstraint {
@@ -269,6 +275,7 @@ impl Constraint {
             Constraint::Range(Range::MaxExclusive, _) => "MaxExclusiveConstraintComponent",
             Constraint::Node(_) => "NodeConstraintComponent",
             Constraint::Sparql(_) => "SPARQLConstraintComponent",
+            Constraint::Closed(_) => "ClosedConstraintComponent",
         }
     }
 }
@@ -615,6 +622,43 @@ fn compile(shapes_ttl: &str) -> Result<Compiled> {
             let target = as_node(t.as_ref()).expect("checked when the shapes were collected");
             constraints.push(Constraint::Node(ids[&target]));
         }
+        // `sh:closed`, with `sh:ignoredProperties`: a value node may have only the predicates of
+        // the shape's own property shapes, and those it ignores. `sh:ignoredProperties` is
+        // checked whether or not the shape is closed, so a malformed one is never silent.
+        let closed = match one_literal(&graph, node, "closed")? {
+            None => false,
+            Some(l) => match (l.datatype() == xsd::BOOLEAN, l.value()) {
+                (true, "true" | "1") => true,
+                (true, "false" | "0") => false,
+                _ => {
+                    return Err(refuse(format!(
+                        "`sh:closed` of {} must be an xsd:boolean, not {l}",
+                        shown(node)
+                    )))
+                }
+            },
+        };
+        let mut allowed = HashSet::new();
+        for t in objects("ignoredProperties") {
+            for member in list_members(&graph, t.as_ref(), "`sh:ignoredProperties`")? {
+                allowed.insert(iri(&member, "ignoredProperties")?);
+            }
+        }
+        if closed {
+            for t in objects("property") {
+                let property = as_node(t.as_ref()).expect("checked when the shapes were collected");
+                // A complex path is refused when that property shape is compiled.
+                allowed.extend(
+                    graph
+                        .objects_for_subject_predicate(&property, &sh("path"))
+                        .filter_map(|p| match p {
+                            TermRef::NamedNode(n) => Some(n.into_owned()),
+                            _ => None,
+                        }),
+                );
+            }
+            constraints.push(Constraint::Closed(allowed));
+        }
         for t in objects("sparql") {
             let constraint = sparql_constraint(&graph, &t, path.as_ref())?;
             has_sparql = true;
@@ -892,6 +936,7 @@ fn default_message(constraint: &Constraint) -> String {
         Constraint::Range(_, l) => format!("Range constraint not satisfied for {l}"),
         Constraint::Node(_) => "Node constraint not satisfied".to_string(),
         Constraint::Sparql(_) => String::new(),
+        Constraint::Closed(_) => "Closed constraint not satisfied".to_string(),
     }
 }
 
@@ -1116,34 +1161,49 @@ impl Run<'_> {
         values: &[RdfTerm],
         out: &mut Vec<Res>,
     ) -> Result<()> {
-        let mut failed: Vec<Option<RdfTerm>> = Vec::new();
+        // Each failure's value, and its result path: the shape's own, except for `sh:closed`.
+        let mut failed: Vec<(Option<RdfTerm>, Option<NamedNode>)> = Vec::new();
         match c {
             Constraint::MinCount(n) => {
                 if (values.len() as u64) < *n {
-                    failed.push(None);
+                    failed.push((None, shape.path.clone()));
                 }
             }
             Constraint::MaxCount(n) => {
                 if (values.len() as u64) > *n {
-                    failed.push(None);
+                    failed.push((None, shape.path.clone()));
                 }
             }
             Constraint::HasValue(t) => {
                 if !values.contains(t) {
-                    failed.push(None);
+                    failed.push((None, shape.path.clone()));
                 }
             }
             Constraint::Sparql(q) => return self.sparql(q, shape, focus, out),
+            // One result per triple whose predicate is not allowed, with that predicate as the
+            // result path and its object as the value (SHACL §4.8.1, and rudof's report).
+            Constraint::Closed(allowed) => {
+                for w in values {
+                    let Some(node) = as_node(w.as_ref()) else {
+                        continue;
+                    };
+                    for t in self.data.triples_for_subject(&node) {
+                        let predicate = t.predicate.into_owned();
+                        if !allowed.contains(&predicate) {
+                            failed.push((Some(t.object.into_owned()), Some(predicate)));
+                        }
+                    }
+                }
+            }
             _ => {
                 for w in values {
                     if !self.holds(c, w)? {
-                        failed.push(Some(w.clone()));
+                        failed.push((Some(w.clone()), shape.path.clone()));
                     }
                 }
             }
         }
-        for value in failed {
-            let path = shape.path.clone();
+        for (value, path) in failed {
             let messages = if shape.messages.is_empty() {
                 vec![Literal::new_simple_literal(default_message(c))]
             } else {
@@ -1224,7 +1284,8 @@ impl Run<'_> {
             Constraint::MinCount(_)
             | Constraint::MaxCount(_)
             | Constraint::HasValue(_)
-            | Constraint::Sparql(_) => true,
+            | Constraint::Sparql(_)
+            | Constraint::Closed(_) => true,
         })
     }
 

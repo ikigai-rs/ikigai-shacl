@@ -40,13 +40,18 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       # The point of the feature: no rudof, no HTTP client, no async runtime. A positive check
       # (the tree must print, and must not name them), so a failing `cargo tree` cannot read as
-      # "absent"; and oxigraph's `http-client` feature must be off.
+      # "absent"; and oxigraph's `http-client` feature must be off. The `futures` facade is
+      # `module`-only (ledger #1396): without it the subset links exactly `ikigai-store`'s graph.
       - name: the subset build links no rudof and no network stack
         run: |
           tree=$(cargo tree --no-default-features -e normal --prefix none)
           grep -q '^ikigai-shacl ' <<<"$tree"
           if grep -E '^(reqwest|hyper|tokio|rustls|oxhttp|rayon|shacl|sparql_service|rudof_[a-z_]+) ' <<<"$tree"; then
             echo "::error::the --no-default-features graph links rudof or a network stack"
+            exit 1
+          fi
+          if grep -E '^futures ' <<<"$tree"; then
+            echo "::error::the --no-default-features graph links the futures facade, which only the module feature needs"
             exit 1
           fi
           features=$(cargo tree --no-default-features -e features -i oxigraph)

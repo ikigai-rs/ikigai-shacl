@@ -1,0 +1,93 @@
+# What may cross a GATEWAY layer (ledger #1370): one kernel asks another to resolve a resource
+# and the answer comes back. Three tuples, CLOSED:
+#
+#   gw:Request  the asker's: a resource IRI, one of the five verbs, named arguments, a correlation
+#               id. The ASKER is the host's stamp (prov:wasAttributedTo), never a field the asker
+#               writes, so it cannot be forged.
+#   gw:Reply    the resolver's, on success: the representation's bytes (base64) and media type.
+#   gw:Failure  the resolver's, on failure: a typed error from a CLOSED set, the ten words of
+#               ikigai-core's `Error::kind()`.
+#
+# A reply or failure names its request with ik:offer and is addressed (ik:addressedTo) to the
+# request's asker. The host admits it only from the participant whose take of that request it
+# holds a receipt for, and in an `addressed = true` layer only when it is addressed to the asker
+# alone; only the asker can take it. (ik:offer's range is ik:Offer, so a reasoner reads a request
+# as an ik:Offer: that is true, a request is an offer of work, the work of resolving one name.)
+#
+# Terms are LAYER-LOCAL under urn:layers:gateway: (gw:), and borrow core's ik:verb and
+# ik:mediaType (no rdfs:domain on either), ik:offer, ik:addressedTo and ik:seq. Nothing here is a
+# new ik: term.
+#
+# The last three properties of each shape are the host's STAMPS (who, when, where in the feed). A
+# dropper that sends any of them is refused; they are allowed here because the stamped tuple is
+# what is validated.
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+@prefix gw: <urn:layers:gateway:> .
+
+# A request: resolve gw:resource with ik:verb, with these arguments. Named
+# urn:layer:{layer}:request:{correlation} by its asker. Unaddressed, any resolver holding `take`
+# on the layer may take it; addressed (one ik:addressedTo), only that resolver can.
+<urn:layers:gateway:shape:request> a sh:NodeShape ;
+  sh:targetClass gw:Request ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path gw:correlation ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:pattern "^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$" ] ,
+    [ sh:path gw:resource ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path ik:verb ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:in ( "Source" "Sink" "Exists" "Delete" "Meta" ) ] ,
+    # One named argument, as `name=value` (the REPL's own spelling); the value is text.
+    [ sh:path gw:argument ; sh:datatype xsd:string ;
+      sh:pattern "^[A-Za-z_][A-Za-z0-9_.-]{0,63}=" ] ,
+    [ sh:path ik:addressedTo ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .
+
+# A reply: the representation the resolver's kernel answered. Named
+# urn:layer:{layer}:reply:{correlation}.
+<urn:layers:gateway:shape:reply> a sh:NodeShape ;
+  sh:targetClass gw:Reply ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path ik:offer ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path ik:addressedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path gw:correlation ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:pattern "^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$" ] ,
+    [ sh:path ik:mediaType ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:maxLength 255 ] ,
+    [ sh:path gw:bytes ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:base64Binary ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .
+
+# A failure: the error the resolver's kernel answered (or the resolver's own refusal), by kind.
+# Named urn:layer:{layer}:reply:{correlation}, like a reply: a request gets one answer.
+# gw:argumentName for missing-argument and invalid-argument; gw:target for unresolved and
+# depth-exceeded (with gw:depth).
+<urn:layers:gateway:shape:failure> a sh:NodeShape ;
+  sh:targetClass gw:Failure ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path ik:offer ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path ik:addressedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path gw:correlation ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:pattern "^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$" ] ,
+    [ sh:path gw:errorKind ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:in ( "unresolved" "missing-argument" "invalid-argument" "endpoint" "denied"
+              "not-found" "conflict" "timeout" "unavailable" "depth-exceeded" ) ] ,
+    [ sh:path gw:message ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:maxLength 4000 ] ,
+    [ sh:path gw:argumentName ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:maxLength 64 ] ,
+    [ sh:path gw:target ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path gw:depth ; sh:maxCount 1 ; sh:datatype xsd:integer ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .

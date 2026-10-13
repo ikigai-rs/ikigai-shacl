@@ -1,0 +1,7 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.org/> .
+ex:BookShape a sh:NodeShape ;
+  sh:targetClass ex:Book ;
+  sh:closed true ;
+  sh:property [ sh:path ex:title ; sh:minCount 1 ; sh:datatype xsd:string ] .

@@ -176,8 +176,8 @@ and tokio, so a feature flag on rudof itself could not remove them. And rudof's 
 recurses along both graphs, so a deep enough input aborts the process that runs it (the bounds
 below refuse those inputs). A host that only validates shapes it ships, such as a plan door
 checking a plan against `ikigai_vocab::SHAPES`, links the subset instead: the reduced build is
-92 packages against the default's 249, 5 more than `ikigai-store` alone with default features
-off (the `futures` family), with no reqwest, no tokio, no rudof and no `http-client` anywhere.
+87 packages against the default's 246, nothing beyond what `ikigai-store` alone links with
+default features off, with no reqwest, no tokio, no rudof and no `http-client` anywhere.
 
 **The subset**, which covers every construct in `ikigai_vocab::SHAPES` and a few cheap
 neighbors:
@@ -187,6 +187,12 @@ neighbors:
   `sh:targetObjectsOf`;
 - node shapes, and property shapes whose `sh:path` is one predicate IRI; `sh:property`,
   `sh:node`, `sh:message` (its `{?this}`, `{?value}` and `{?path}` templates resolved);
+- `sh:closed` with `sh:ignoredProperties`: a value node of a closed shape may have only the
+  predicates of the shape's own `sh:property` shapes and those it ignores, and every other
+  triple is one `sh:ClosedConstraintComponent` result, its predicate the result path and its
+  object the value, as rudof reports it. (ikigai-layers requires `sh:closed true` on every node
+  shape, so this is what lets a host without rudof validate a layer's shapes;
+  `tests/closed_shapes.rs` runs the subset over the gateway layers' shapes, copied verbatim);
 - `sh:class`, `sh:datatype` (a literal must also be well formed for the XSD numeric, boolean,
   date, time and duration types), `sh:nodeKind`, `sh:minCount`, `sh:maxCount`, `sh:in`,
   `sh:hasValue`, `sh:pattern` with `sh:flags`, `sh:minLength`, `sh:maxLength`,
@@ -197,7 +203,7 @@ neighbors:
 - the non-validating annotations `sh:name`, `sh:description`, `sh:order` and `sh:group`.
 
 **It refuses everything else, by name.** Any other term of the SHACL namespace, as a predicate
-or as the class of an `rdf:type` (`sh:or`, `sh:not`, `sh:closed`, `sh:severity`,
+or as the class of an `rdf:type` (`sh:or`, `sh:not`, `sh:equals`, `sh:severity`,
 `sh:deactivated`, `sh:ask`, `sh:target`, `sh:SPARQLTarget`, …), a complex property path, a
 recursive shape (a cycle of `sh:node` / `sh:property` references), an RDF 1.2 triple term, and a
 malformed parameter are each a typed `InvalidArgument` on `shapes` (or `data`) naming what was

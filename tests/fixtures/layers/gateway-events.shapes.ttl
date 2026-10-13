@@ -1,0 +1,27 @@
+# What may be said on a gateway's EVENT channel (ledger #1370): an invalidation, CLOSED. The side
+# that owns a resource says that it changed (which resource, and why), so a kernel that holds an
+# answer it got through the gateway can drop it. How a golden-thread cut becomes one of these
+# (cross-kernel cache invalidation through a feed) is an open question; this is the shape it
+# crosses in.
+#
+# An entry is written about <urn:layer:new>; the host names it and stamps the last three
+# properties (who said it, when, where in the feed).
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+@prefix gw: <urn:layers:gateway:> .
+
+<urn:layers:gateway:shape:invalidation> a sh:NodeShape ;
+  sh:targetClass gw:Invalidation ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path gw:resource ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path gw:reason ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ;
+      sh:maxLength 1000 ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .

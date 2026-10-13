@@ -63,7 +63,6 @@ rudof_rdf = { version = ">=0.3.22, <0.3.25", optional = true }       # RDFFormat
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-futures = "0.3"
 # `limits::check_sparql` and `limits::on_sparql_stack`: the bound on caller SPARQL (a shapes
 # graph's `sh:select`) and the sized stack validation runs on (ledger #963); and
 # `service::has_service`, the walk that finds a `SERVICE` anywhere in a parsed query
@@ -163,6 +162,13 @@ optional = true
 [dependencies.console_error_panic_hook]
 version = "0.1"
 optional = true
+[dependencies.futures]
+# Only for the `module` feature: `ikigai_module::wasm_module!` expands to
+# `::futures::channel::oneshot`, so the crate that invokes the macro must name `futures` itself
+# (ikigai-module's own docs list it). The library code never uses it; as a normal dependency it
+# was the only thing the subset build linked beyond `ikigai-store` (ledger #1396).
+version = "0.3"
+optional = true
 
 [features]
 # rudof is the default validator (ledger #1176): consumers that bind `urn:shacl:validate` today
@@ -179,9 +185,12 @@ module = [
     "dep:wasm-bindgen-futures",
     "dep:js-sys",
     "dep:console_error_panic_hook",
+    "dep:futures",
 ]
 
 [dev-dependencies]
+# `executor::block_on`, which the integration tests drive the kernel with, in every feature
+# combination (the normal dependency above is `module`-only).
 futures = "0.3"
 # The module recipe as one test (tests/conformance.rs). 0.6.0 is the floor for SPACE-NAME
 # (`self_named_space`, ledger #987). ⚠ `^0.6.0` is a CEILING (<0.7.0): this pin sat at
