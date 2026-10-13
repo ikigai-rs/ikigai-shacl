@@ -1,0 +1,25 @@
+{
+  "conforms": false,
+  "violations": [
+    {
+      "focus_node": "http://example.org/book1",
+      "path": "http://example.org/isbn",
+      "component": "http://www.w3.org/ns/shacl#ClosedConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/book2",
+      "path": "http://example.org/pages",
+      "component": "http://www.w3.org/ns/shacl#ClosedConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/book2",
+      "path": "http://example.org/tag",
+      "component": "http://www.w3.org/ns/shacl#ClosedConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/book2",
+      "path": "http://example.org/tag",
+      "component": "http://www.w3.org/ns/shacl#ClosedConstraintComponent"
+    }
+  ]
+}

@@ -51,8 +51,6 @@ fn every_shacl_term_outside_the_subset_is_refused_by_name() {
         ("sh:and", "ex:S sh:targetClass ex:Person ; sh:and ( [ sh:class ex:A ] ) ."),
         ("sh:not", "ex:S sh:targetClass ex:Person ; sh:not [ sh:class ex:A ] ."),
         ("sh:xone", "ex:S sh:targetClass ex:Person ; sh:xone ( [ sh:class ex:A ] ) ."),
-        ("sh:closed", "ex:S sh:targetClass ex:Person ; sh:closed true ."),
-        ("sh:ignoredProperties", "ex:S sh:targetClass ex:Person ; sh:ignoredProperties ( ex:p ) ."),
         ("sh:equals", "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:equals ex:label ] ."),
         ("sh:disjoint", "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:disjoint ex:label ] ."),
         ("sh:lessThan", "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:lessThan ex:label ] ."),

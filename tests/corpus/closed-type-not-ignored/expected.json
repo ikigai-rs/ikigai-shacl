@@ -1,0 +1,10 @@
+{
+  "conforms": false,
+  "violations": [
+    {
+      "focus_node": "http://example.org/book1",
+      "path": "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+      "component": "http://www.w3.org/ns/shacl#ClosedConstraintComponent"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+@prefix ex: <http://example.org/> .
+ex:book1 a ex:Book ; ex:title "Dune" ; ex:author ex:herbert ; ex:isbn "0441013597" .
+ex:book2 a ex:Book ; ex:title "Emma" ; ex:pages 474 ; ex:tag "classic", "novel" .
