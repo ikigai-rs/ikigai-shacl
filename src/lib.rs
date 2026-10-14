@@ -361,22 +361,14 @@ struct ValidateEndpoint;
 #[async_trait]
 impl Endpoint for ValidateEndpoint {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
-        let data = inv
-            .inline_str("data")
-            .map_err(|_| {
-                Error::Endpoint(
-                    "urn:shacl:validate needs a `data` RDF (Turtle) graph — usually piped in"
-                        .to_string(),
-                )
-            })?
-            .to_string();
-        let shapes_arg = inv.inline_str("shapes").map_err(|_| {
-            Error::Endpoint(
-                "urn:shacl:validate needs a `shapes` SHACL graph: inline Turtle or a resolvable \
-                 resource IRI"
-                    .to_string(),
-            )
-        })?;
+        // Core's own refusal, unchanged: `MissingArgument` when the argument is absent,
+        // `InvalidArgument` when it is not inline or not UTF-8. These used to be rewritten as an
+        // untyped `Error::Endpoint` with a friendlier sentence, which made a caller's omission
+        // indistinguishable from a failure of the endpoint (ikigai-conformance's REQUIRED). The
+        // sentence lives on in the ArgSpecs: `data` is the Turtle graph, usually piped in;
+        // `shapes` is inline Turtle or a resolvable resource IRI.
+        let data = inv.inline_str("data")?.to_string();
+        let shapes_arg = inv.inline_str("shapes")?;
         let as_type = inv.inline_str("as").unwrap_or(TURTLE).to_string();
 
         // Inline Turtle used directly; anything else is a resource reference resolved through
@@ -666,6 +658,48 @@ mod tests {
         assert!(is_inline_shapes("<http://x> a sh:NodeShape ."));
         assert!(!is_inline_shapes("urn:data:shapes"));
         assert!(!is_inline_shapes("https://example.org/shapes.ttl"));
+    }
+
+    /// A call missing a required input, or carrying one that is not UTF-8, is refused with
+    /// core's TYPED error naming the input, never an untyped `Error::Endpoint`: a caller (an
+    /// agent, `urn:kernel:validate`) must be able to tell its own omission from a failure of
+    /// the endpoint. ikigai-conformance's REQUIRED check walks the same drops.
+    #[test]
+    fn a_missing_or_undecodable_input_is_refused_typed() {
+        let kernel = ikigai_core::Kernel::new(std::sync::Arc::new(space()));
+        let call = |args: &[(&str, &[u8])]| {
+            let request = args.iter().fold(
+                Request::new(
+                    Verb::Source,
+                    Iri::parse("urn:shacl:validate").expect("a valid IRI"),
+                ),
+                |request, (name, value)| request.with_arg(*name, ArgRef::Inline(value.to_vec())),
+            );
+            futures::executor::block_on(kernel.issue(request, &ikigai_core::Capability::root()))
+                .expect_err("the call is refused")
+        };
+        let data: &[u8] = b"@prefix : <http://example.org/> .\n:bob a :Person .";
+
+        let err = call(&[("shapes", SHAPES.as_bytes())]);
+        assert!(
+            matches!(&err, Error::MissingArgument(name) if name == "data"),
+            "{err:?}"
+        );
+        let err = call(&[("data", data)]);
+        assert!(
+            matches!(&err, Error::MissingArgument(name) if name == "shapes"),
+            "{err:?}"
+        );
+        let err = call(&[("data", &[0xff, 0xfe]), ("shapes", SHAPES.as_bytes())]);
+        assert!(
+            matches!(&err, Error::InvalidArgument { name, .. } if name == "data"),
+            "{err:?}"
+        );
+        let err = call(&[("data", data), ("shapes", &[0xff, 0xfe])]);
+        assert!(
+            matches!(&err, Error::InvalidArgument { name, .. } if name == "shapes"),
+            "{err:?}"
+        );
     }
 }
 
