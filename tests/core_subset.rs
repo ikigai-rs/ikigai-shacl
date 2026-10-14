@@ -1,7 +1,9 @@
 //! The subset validator (`ikigai_shacl::core_shacl`, ledger #1176) on its own: what it refuses,
 //! that it never recurses over either graph, and that its SPARQL runs behind the same guards as
 //! the rudof path's. It runs in every build; `tests/differential.rs` holds it to rudof's
-//! verdicts where both are compiled.
+//! verdicts where both are compiled. The time-budget test is NOT here: it leaves an overdue
+//! evaluation running that refuses every later validation in its process, so it lives in
+//! `tests/time_budget.rs`, a process of its own (see there).
 //!
 //! ★ A bound refuses, it never truncates. Every refusal below is checked to be a typed
 //! `InvalidArgument` on `shapes` (or `data`) that NAMES what it refused, so a shapes graph the
@@ -194,29 +196,6 @@ fn caller_sparql_is_bounded_before_it_is_parsed() {
         Err(Error::InvalidArgument { name, .. }) => assert_eq!(name, "shapes"),
         other => panic!("a 200-operand join was not refused: {other:?}"),
     }
-}
-
-#[test]
-fn a_slow_select_is_answered_at_the_time_budget() {
-    // A six-way cross product over a few dozen triples: inside every size, nesting and algebra
-    // bound, and minutes of work (ikigai-store's budget module measures the shape). The caller
-    // is answered with a typed timeout at the base budget (5 s), never with a partial report.
-    let data: String = (0..40)
-        .map(|i| format!("<urn:s{i}> <urn:p> <urn:o{i}> .\n"))
-        .chain(std::iter::once(
-            "<urn:x> a <http://example.org/Person> .\n".to_string(),
-        ))
-        .collect();
-    let body = "ex:S sh:targetClass ex:Person ; sh:sparql [ sh:select \"\"\"SELECT $this (COUNT(*) AS ?n) WHERE { \
-                ?a ?b ?c . ?d ?e ?f . ?g ?h ?i . ?j ?k ?l . ?m ?n0 ?o . ?q ?r ?t } GROUP BY $this\"\"\" ] .";
-    let started = std::time::Instant::now();
-    let outcome = validate_report(&data, &shapes(body));
-    let took = started.elapsed();
-    assert!(matches!(outcome, Err(Error::Timeout(_))), "{outcome:?}");
-    assert!(
-        took < std::time::Duration::from_secs(30),
-        "answered after {took:?}"
-    );
 }
 
 #[test]
