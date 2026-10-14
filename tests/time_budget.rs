@@ -3,17 +3,15 @@
 //! ★ Why its own binary: the timed-out evaluation is still running when the caller is answered,
 //! because oxigraph cannot always stop one partway. Every subset validation in a process shares
 //! one `EvaluationBudget` (`core_shacl::budget`), and since ikigai-store 0.2.21 (ledger #1427)
-//! that budget reserves one of `default_max_overdue()` slots per evaluation (a quarter of the
-//! machine's available parallelism, at least one) and refuses every new evaluation with
-//! `Unavailable` while that many are overdue. On a four-core CI runner that is ONE slot, so the
-//! straggler this test leaves behind refused every later validation in the same process: in
-//! `tests/core_subset.rs` it turned four or five unrelated tests red with "1 SPARQL evaluations
-//! on this store are still running", on CI and never on an 18-core laptop, where the cap is four.
-//! A separate test binary is a separate process, and so a separate budget.
-//!
-//! What a HOST sees is the same thing, and that is the store's design rather than a defect
-//! here: after one runaway `sh:select`, the subset validator refuses (transiently, typed) until
-//! the straggler ends, rather than letting each request pin another core.
+//! that budget reserves one of its `max_overdue` slots per evaluation and refuses every new
+//! evaluation with `Unavailable` while that many are overdue. Through shacl 0.3.6 the cap was the
+//! store's default, a quarter of the machine's available parallelism and at least one: ONE on a
+//! four-core CI runner, so the straggler this test leaves behind refused every later validation
+//! in the same process. In `tests/core_subset.rs` it turned four or five unrelated tests red with
+//! "1 SPARQL evaluations on this store are still running", on CI and never on an 18-core laptop,
+//! where the cap is four. The cap is now at least two (ledger #1510, `tests/one_runaway.rs`), but
+//! the straggler still holds a slot for minutes, so this stays a separate test binary: a separate
+//! process, and so a separate budget.
 
 use ikigai_core::Error;
 use ikigai_shacl::core_shacl::validate_report;

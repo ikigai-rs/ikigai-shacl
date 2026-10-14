@@ -52,7 +52,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use ikigai_core::{Capability, ContentId, Error, Representation, Result};
-use ikigai_store::budget::{check_query, EvaluationBudget};
+use ikigai_store::budget::{
+    check_query, default_max_overdue, EvaluationBudget, TimeBudget, DEFAULT_BUDGET,
+};
 use oxigraph::io::{RdfFormat, RdfParser, RdfSerializer};
 use oxigraph::sparql::{CancellationToken, QueryResults, Variable};
 use oxigraph::store::Store;
@@ -1501,12 +1503,49 @@ fn compare(a: &Literal, b: &Literal) -> Option<std::cmp::Ordering> {
 }
 
 /// The one budget every subset validation shares, so its overdue count caps the cores runaway
-/// SPARQL can hold (`EvaluationBudget`: "make ONE per host and clone it"). The store's
+/// SPARQL can hold (`EvaluationBudget`: "make ONE per host and clone it"). The store's time
 /// defaults: 5 s for an ordinary caller, more only by a `urn:cap:store:budget:<ms>` grant, the
-/// 120 s ceiling for root.
+/// 120 s ceiling for root. The overdue cap is this crate's own: [`MAX_OVERDUE_FLOOR`] (ledger
+/// #1510).
 fn budget() -> &'static EvaluationBudget {
     static BUDGET: OnceLock<EvaluationBudget> = OnceLock::new();
-    BUDGET.get_or_init(EvaluationBudget::default)
+    BUDGET.get_or_init(|| {
+        EvaluationBudget::new(TimeBudget::new(DEFAULT_BUDGET).with_max_overdue(max_overdue()))
+    })
+}
+
+/// The fewest validations that may be in flight, and so overdue, at once: TWO, so one
+/// runaway `sh:select` cannot refuse every later validation in the process (ledger #1510).
+///
+/// ★ Why this crate states its own cap. The store's default is a quarter of the machine's
+/// available parallelism, at least one, and since ikigai-store 0.2.21 (ledger #1427) a budget
+/// at its cap refuses every new evaluation with `Unavailable` while that many are overdue. On
+/// any host with fewer than 8 cores that cap is ONE, so a single caller's slow shapes graph
+/// (a cross product oxigraph cannot cancel, minutes of work) disabled SHACL for every caller
+/// until it ended (ledger #1500). Brian's call there: the store default stays, and a consumer
+/// states its own.
+///
+/// Why two, measured 2026-10-14 (debug build, this crate's subset validator, one runaway
+/// six-way cross product left overdue, then 16 concurrent ordinary validations, each a typed
+/// node, one property shape and a cheap `sh:select`): at a cap of 1, which is what a four-core
+/// CI runner gets, 0 of 16 answered; at 2, 16 of 16, the slowest in 4.8 ms; at 3 and 4, 16 of
+/// 16 again, at most 2.4 ms sooner. An ordinary validation takes milliseconds, so one free slot
+/// is plenty, and more slots buy only tolerance for MORE runaways, each pinning a core: at 3 on
+/// a four-core host, three runaways would hold three of its four cores. Two is the least that
+/// keeps validation answering through one runaway, and at most half of a four-core host. Two
+/// runaways at a cap of 2 refuse again (0 of 16, measured), and that bound is the point: the
+/// cap is what stops each new request pinning another core.
+///
+/// What it costs: the cap is also how many validations RUN at once (the store reserves a slot
+/// per evaluation), so a small host now validates two at a time instead of one; and on a one-
+/// or two-core host two runaways can hold every core, where the store's default held one.
+/// Above 8 cores the store's own default is already at least 2, and it is kept, so a large
+/// host is unchanged.
+const MAX_OVERDUE_FLOOR: usize = 2;
+
+/// [`MAX_OVERDUE_FLOOR`], or the store's default when that is larger.
+fn max_overdue() -> usize {
+    default_max_overdue().max(MAX_OVERDUE_FLOOR)
 }
 
 /// Validate: compile the shapes (iteratively, on the caller's thread, each `sh:select` parsed
