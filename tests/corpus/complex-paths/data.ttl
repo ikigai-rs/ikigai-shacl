@@ -1,0 +1,9 @@
+@prefix ex: <http://example.org/> .
+# carol satisfies all four paths; dave satisfies none.
+ex:carol a ex:Person ;
+  ex:phone "555-0100" ;
+  ex:employer ex:acme ;
+  ex:manager ex:erin .
+ex:acme ex:name "Acme" ;
+  ex:member ex:carol .
+ex:dave a ex:Person .

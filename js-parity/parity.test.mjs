@@ -21,11 +21,32 @@ function parse (ttl) {
   return rdf.dataset(new Parser({ factory: rdf }).parse(ttl))
 }
 
+// One step of shacl-engine's parsed path, in the rendering ikigai_shacl documents for
+// `Violation::path` (rudof's): a lone predicate is its bare IRI, an alternative is
+// `(a | b)`, an inverse `^(a)`, and the quantifiers `(a)*`, `(a)+`, `(a)?`.
+function stepString (step) {
+  const preds = step.predicates.map(p => p.value)
+  if (step.quantifier === 'one') {
+    if (preds.length > 1) return `(${preds.join(' | ')})`
+    return step.start === 'object' ? `^(${preds[0]})` : preds[0]
+  }
+  const postfix = { zeroOrMore: '*', oneOrMore: '+', zeroOrOne: '?' }[step.quantifier]
+  if (!postfix) throw new Error(`unknown path quantifier ${step.quantifier}`)
+  return `(${preds[0]})${postfix}`
+}
+
+// A whole path: one step as itself, several as a sequence `(a / b)`. Reading only the first
+// predicate of the first step reported the alternative (email | phone) as `email` (ledger #204).
+function pathString (path) {
+  if (!path || path.length === 0) return null
+  return path.length === 1 ? stepString(path[0]) : `(${path.map(stepString).join(' / ')})`
+}
+
 // shacl-engine report → the portable ValidationOutcome (same shape as ikigai_shacl's).
 function outcome (report) {
   const violations = report.results.map(r => ({
     focus_node: r.focusNode?.term?.value ?? null,
-    path: r.path?.[0]?.predicates?.[0]?.value ?? null,
+    path: pathString(r.path),
     component: r.constraintComponent?.value ?? null
   }))
   return { conforms: report.conforms, violations }

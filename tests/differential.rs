@@ -173,10 +173,29 @@ const RUDOF_FAILS: &[&str] = &[
     "bad-step-not-iri",
 ];
 
+/// The parity cases the subset validator refuses, by name, because their shapes use a SHACL
+/// term outside its subset: `corpus/complex-paths` exists to pin how rudof and shacl-engine
+/// render a path that is not a predicate IRI (ledger #204), and the subset takes only a
+/// predicate path. Refusing is that validator's contract, so here it must refuse, never answer.
+const CORE_REFUSES: &[&str] = &["corpus/complex-paths"];
+
 /// Both engines over one case: their verdicts, which must be equal. A case in [`RUDOF_FAILS`]
-/// must fail in rudof, and not conform in the subset validator; it is returned as `None`.
+/// must fail in rudof, and not conform in the subset validator; a case in [`CORE_REFUSES`]
+/// must validate in rudof and be refused by the subset validator. Either is returned as `None`.
 fn both(case: &Case) -> Option<(Verdict, Verdict)> {
     let rudof = ikigai_shacl::validate_turtle(&case.data, &case.shapes);
+    if CORE_REFUSES.contains(&case.name.as_str()) {
+        rudof.unwrap_or_else(|e| panic!("[{}] rudof: {e}", case.name));
+        let err = core_shacl::validate_turtle(&case.data, &case.shapes)
+            .expect_err(&format!("[{}] the subset validator answered", case.name));
+        assert!(
+            err.to_string()
+                .contains("which the SHACL subset validator does not implement"),
+            "[{}] {err}",
+            case.name
+        );
+        return None;
+    }
     let core = core_shacl::validate_turtle(&case.data, &case.shapes)
         .unwrap_or_else(|e| panic!("[{}] the subset validator: {e}", case.name));
     let core = verdict(&core);
@@ -262,8 +281,8 @@ fn every_plan_breaks_what_it_says_it_breaks() {
 
 #[test]
 fn both_validators_agree_on_the_parity_corpus() {
-    // Every case of the parity corpus uses only the supported subset, so the subset validator
-    // refuses none of them; were one added that it does refuse, `both` would name it here.
+    // Every case of the parity corpus but those in CORE_REFUSES uses only the supported
+    // subset; `both` holds the subset validator to refusing those, and to agreeing on the rest.
     let cases = parity_cases();
     assert!(
         cases.len() >= 5,
@@ -271,7 +290,14 @@ fn both_validators_agree_on_the_parity_corpus() {
         cases.len()
     );
     for case in &cases {
-        let (rudof, core) = both(case).expect("rudof validates every parity case");
+        let Some((rudof, core)) = both(case) else {
+            assert!(
+                CORE_REFUSES.contains(&case.name.as_str()),
+                "[{}]",
+                case.name
+            );
+            continue;
+        };
         assert_eq!(rudof, core, "[{}]", case.name);
     }
 }
@@ -280,7 +306,7 @@ fn both_validators_agree_on_the_parity_corpus() {
 fn the_json_faces_agree_too() {
     // The JSON face is the same projection on both sides: compare it whole, message aside.
     for case in plan_cases().iter().chain(parity_cases().iter()) {
-        if RUDOF_FAILS.contains(&case.name.as_str()) {
+        if RUDOF_FAILS.contains(&case.name.as_str()) || CORE_REFUSES.contains(&case.name.as_str()) {
             continue;
         }
         let rudof = ikigai_shacl::validate_report(&case.data, &case.shapes).unwrap();

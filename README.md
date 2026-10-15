@@ -249,6 +249,11 @@ Both implementations are held to a single shared corpus:
 - `tests/parity.rs` asserts **rudof** (native) matches every `expected.json`.
 - `js-parity/parity.test.mjs` asserts **shacl-engine** (browser) matches the *same*
   `expected.json`.
+- A signature's `path` is an IRI only for a predicate path. Any other path is a rendered
+  expression with unbracketed IRIs, `(a | b)`, `(a / b)`, `^(a)`, `(a)*`, `(a)+`, `(a)?`, which
+  is not an IRI (`ReportResult::path` states it, with a doctest). `tests/corpus/complex-paths`
+  holds both implementations to it; the subset validator refuses that case, as it refuses
+  every path that is not a predicate.
 
 Same corpus, same expected ⇒ the two validators agree by construction. CI runs both.
 
