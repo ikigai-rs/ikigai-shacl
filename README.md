@@ -28,14 +28,32 @@ is therefore given a stable IRI:
 urn:ikigai:shacl:report:<content id of the whole report graph>:<blank-node label>
 ```
 
-The content id (`b3:…`, BLAKE3 over the graph's canonical, sorted triples) makes the name
-a pure function of the report: two runs over the same data and shapes mint the same IRIs,
-and two *different* reports can never collide — which is exactly what a bare `_:1`-style
-counter cannot promise. The cost is the other direction, and it is deliberate: a report
-that differs anywhere is a different content id, so every node in it is renamed. Results
-are aligned across reports by their content — `sh:focusNode`, `sh:resultPath`,
-`sh:sourceConstraintComponent`, `sh:value` — not by their IRI; the `application/json`
-face's sorted `violations` is that aligned view.
+Every part is a function of the inputs, never of the run (ledger #1565; until then the same
+data and shapes gave a different report on every fresh kernel, which a `.cacheable()` resource
+must not):
+
+- **The content id** (`b3:…`, BLAKE3 over the graph's sorted N-Triples lines) covers the whole
+  report, so two *different* reports can never collide, which is exactly what a bare
+  `_:1`-style counter cannot promise.
+- **A node from an input graph** is labeled by where it first appears in its document:
+  `data.b0`, `data.b1`, … and `shapes.b0`, … The Turtle parser gives every `[ … ]` a random
+  label, so that label is never used, and since a parser-minted label cannot be told from an
+  author's, an explicit `_:alice` is renamed the same way.
+- **A node the validator mints** (the report, each result, the structure of a complex
+  `sh:resultPath`) is `report`, or, from rudof, a name derived from its content and its
+  parent's name, so the order rudof happens to return its results in does not matter. (The
+  subset validator's results come in a fixed order, and are `result.0`, `result.1`, ….)
+- **The triples are serialized sorted.**
+
+The JSON face and a `sh:message` template's `{$this}`/`{?value}` use the same labels
+(`_:data.b0`). The cost is the other direction, and it is deliberate: a report that differs
+anywhere is a different content id, so every node in it is renamed; and the labels follow the
+input *text*, so the same graph written in another order may label its blank nodes otherwise.
+Results are aligned across reports by their content (`sh:focusNode`, `sh:resultPath`,
+`sh:sourceConstraintComponent`, `sh:value`), not by their IRI; the `application/json` face's
+sorted `violations` is that aligned view. (RDF canonicalization, RDFC-1.0, would name nodes by
+the graph alone, but it is exponential on ordinary reports: 500 blank focus nodes failing two
+blank property shapes did not finish in a minute.)
 
 ## Conformance
 

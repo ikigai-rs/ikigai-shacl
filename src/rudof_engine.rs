@@ -6,12 +6,9 @@
 //! [`crate::REPORT_SCHEME`]). Without this feature the crate serves the same resource from
 //! [`crate::core_shacl`], which is held to the same verdicts by `tests/differential.rs`.
 
-use crate::depth;
-use crate::{
-    canonical_line, encode_label, repr, QuotedTriple, Report, ReportResult, Term, JSON,
-    REPORT_SCHEME, SHAPES_ARG, TURTLE, XSD_STRING,
-};
-use ikigai_core::{ContentId, Error, Representation, Result};
+use crate::{depth, naming};
+use crate::{repr, QuotedTriple, Report, ReportResult, Term, JSON, SHAPES_ARG, TURTLE, XSD_STRING};
+use ikigai_core::{Error, Representation, Result};
 use rudof_rdf::rdf_core::term::literal::ConcreteLiteral;
 use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object, Triple as RdfTriple};
 use rudof_rdf::rdf_core::{BuildRDF, NeighsRDF, RDFFormat, Rdf, SHACLPath};
@@ -30,12 +27,39 @@ use sparql_service::RdfData;
 /// [`check_iris`]). `role` is the argument the text arrived in.
 fn parse_data(ttl: &str, role: &str) -> Result<RdfData> {
     depth::check_turtle_nesting(ttl, role)?;
-    let graph =
+    let parsed =
         RdfData::from_str(ttl, &RDFFormat::Turtle, None, &ReaderMode::default()).map_err(|e| {
             Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}"))
         })?;
+    let graph = with_stable_labels(ttl, role, &parsed)?;
     check_iris(&graph, role)?;
     Ok(graph)
+}
+
+/// The graph rudof parsed, rebuilt with its blank nodes labeled by first appearance in `ttl`
+/// (see [`naming::by_appearance`]): rudof's parser gives every `[ … ]` a random label, and a
+/// blank node reaches the report (ledger #1565). `parsed` has already accepted the text, so it
+/// keeps rudof's verdict, its error messages and its prefix map; this parses it once more with
+/// the same parser in the same mode (oxttl's Turtle parser, lenient, which rudof's strict
+/// reader runs and then refuses on the first error, of which there were none), which yields
+/// the same triples, in document order.
+fn with_stable_labels(ttl: &str, role: &str, parsed: &RdfData) -> Result<RdfData> {
+    let bad = |e: &dyn std::fmt::Display| {
+        Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}"))
+    };
+    let triples = oxigraph::io::RdfParser::from_format(oxigraph::io::RdfFormat::Turtle)
+        .lenient()
+        .for_slice(ttl.as_bytes())
+        .map(|quad| quad.map(oxrdf::Triple::from).map_err(|e| bad(&e)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut graph = OxigraphInMemory::empty();
+    graph.set_prefix_map(parsed.graph_prefixmap());
+    for t in naming::by_appearance(triples, role)? {
+        graph
+            .add_triple(t.subject, t.predicate, t.object)
+            .map_err(|e| bad(&e))?;
+    }
+    RdfData::from_graph(graph).map_err(|e| bad(&e))
 }
 
 /// Parse + compile a SHACL shapes Turtle graph into the validator's IR schema, refusing any
@@ -590,135 +614,18 @@ pub(crate) fn validate(data_ttl: &str, shapes_ttl: &str, as_type: &str) -> Resul
     }
 }
 
-/// An [`IriOrBlankNode`] as the [`Object`] carrying the same term — so subjects and
-/// objects go through one rewrite and one canonical rendering.
-fn subject_object(subject: &IriOrBlankNode) -> Object {
-    match subject {
-        IriOrBlankNode::Iri(iri) => Object::iri(iri.clone()),
-        IriOrBlankNode::BlankNode(label) => Object::bnode(label.clone()),
-    }
-}
-
-/// Replace every blank node in `object` with its skolem IRI under `scheme`.
-fn skolemize_object(object: Object, scheme: &str) -> Result<Object> {
-    match object {
-        Object::BlankNode(label) => skolem_iri(scheme, &label),
-        Object::Triple {
-            subject,
-            predicate,
-            object,
-        } => {
-            // An RDF-star quoted triple: its subject may be a blank node too.
-            let subject = match skolemize_object(subject_object(&subject), scheme)? {
-                Object::Iri(iri) => IriOrBlankNode::Iri(iri),
-                other => {
-                    return Err(Error::Endpoint(format!(
-                        "urn:shacl:validate: quoted-triple subject is not a node: {other}"
-                    )))
-                }
-            };
-            Ok(Object::Triple {
-                subject: Box::new(subject),
-                predicate,
-                object: Box::new(skolemize_object(*object, scheme)?),
-            })
-        }
-        iri_or_literal => Ok(iri_or_literal),
-    }
-}
-
-/// The skolem IRI for one blank-node label — **parsed**, not merely formatted, so a
-/// label this crate failed to encode is an error rather than a malformed graph.
-fn skolem_iri(scheme: &str, label: &str) -> Result<Object> {
-    let iri = format!("{scheme}{}", encode_label(label));
-    let parsed = Object::parse(&iri, None)
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: bad skolem IRI `{iri}`: {e}")))?;
-    match parsed {
-        Object::Iri(_) => Ok(parsed),
-        _ => Err(Error::Endpoint(format!(
-            "urn:shacl:validate: skolem IRI `{iri}` did not parse as an IRI"
-        ))),
-    }
-}
-
-/// Give every blank node in the report graph a stable IRI — the recipe's
-/// "skolemize; no blank nodes", which is what makes a report diffable, unionable
-/// and SPARQL-able instead of isomorphism-compared.
-///
-/// rudof's `to_rdf` mints a blank node for the report, one per result, and passes
-/// through whatever the shapes graph gave it (`sh:sourceShape`, and the RDF-list
-/// structure of a complex `sh:path`). Each becomes
-///
-/// ```text
-/// urn:ikigai:shacl:report:<content-id of the whole report graph>:<blank-node label>
-/// ```
-///
-/// **What that buys and what it costs, stated because the code cannot.** The
-/// content address makes the name a pure function of the report, so two runs over
-/// the same data and shapes mint the same IRIs and two different reports can never
-/// collide — which is the failure a bare `_:1`-style counter has. The cost is the
-/// other direction: a report that differs *anywhere* is a different content id, so
-/// every node in it is renamed. Nodes are aligned across reports by their content
-/// (`sh:focusNode`, `sh:resultPath`, `sh:sourceConstraintComponent`, `sh:value`),
-/// not by their IRI — the `application/json` face's sorted [`Report`] is the
-/// aligned view.
-///
-/// The label after the content id is the source graph's, which is only ever unique
-/// *within* one document — that is exactly the scope the content id supplies.
-fn skolemize(graph: &OxigraphInMemory) -> Result<OxigraphInMemory> {
-    type Sub = <OxigraphInMemory as Rdf>::Subject;
-    type Pred = <OxigraphInMemory as Rdf>::IRI;
-
-    let bad = |e: String| Error::Endpoint(format!("urn:shacl:validate: report graph: {e}"));
-    let mut triples: Vec<(Object, Pred, Object)> = Vec::new();
-    for triple in graph.triples().map_err(|e| bad(e.to_string()))? {
-        let (subject, predicate, object) = triple.into_components();
-        // Infallible for this store (an RDF subject IS an IRI or a blank node), which is
-        // why this one is `into` and the object below is not: a term may also be a
-        // literal, and the trait bound is only `TryInto`.
-        let subject: IriOrBlankNode = subject.into();
-        let object: Object = object
-            .try_into()
-            .map_err(|_| bad("an object is not an RDF term".to_string()))?;
-        triples.push((subject_object(&subject), predicate, object));
-    }
-
-    // The content address of the graph: canonical lines, sorted, so it does not
-    // depend on the store's iteration order.
-    let mut lines: Vec<String> = triples
-        .iter()
-        .map(|(s, p, o)| canonical_line(&term(s), p.as_str(), &term(o)))
-        .collect();
-    lines.sort();
-    let scheme = format!(
-        "{REPORT_SCHEME}{}:",
-        ContentId::of(lines.join("\n").as_bytes())
-    );
-
-    let mut out = OxigraphInMemory::empty();
-    out.set_prefix_map(graph.prefixmap().clone());
-    for (subject, predicate, object) in triples {
-        let subject = Sub::try_from(skolemize_object(subject, &scheme)?)
-            .map_err(|_| bad("a skolemized subject is not a subject".to_string()))?;
-        out.add_triple(subject, predicate, skolemize_object(object, &scheme)?)
-            .map_err(|e| bad(e.to_string()))?;
-    }
-    Ok(out)
-}
-
-/// Serialize the SHACL ValidationReport as a Turtle graph (the report *is* RDF),
-/// skolemized: see [`skolemize`] for the IRI every node is minted under.
+/// The report graph as Turtle: rudof's `to_rdf`, with the nodes it minted renamed by content,
+/// skolemized and sorted (see [`crate::naming`]).
 fn report_turtle(report: &ValidationReport) -> Result<String> {
     let mut graph = OxigraphInMemory::empty();
     report
         .to_rdf(&mut graph)
         .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report to RDF error: {e}")))?;
-    let out = skolemize(&graph)?;
-    let mut buf = Vec::new();
-    out.serialize(&RDFFormat::Turtle, &mut buf)
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report serialize error: {e}")))?;
-    String::from_utf8(buf)
-        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report not UTF-8: {e}")))
+    let triples = graph
+        .triples()
+        .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: report graph: {e}")))?
+        .collect();
+    naming::turtle(&naming::skolemize(naming::name_minted(triples)?)?)
 }
 
 #[cfg(test)]
