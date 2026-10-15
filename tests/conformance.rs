@@ -309,15 +309,20 @@ fn declared_outputs_are_the_media_types_served() {
 /// The skolem contract, which SKOLEM-RDF can only half-see: it proves there is no
 /// blank node, not that what replaced one is stable or unique. Every node is named
 /// under `urn:ikigai:shacl:report:<content id>:`, the same report mints the same
-/// names twice, and a different report mints different ones.
+/// names twice, and a different report mints different ones. Each report is resolved on a
+/// FRESH kernel: on one kernel the second resolution is the cache's copy of the first, so it
+/// could only ever agree, and this test passed while every run named the nodes differently
+/// (ledger #1565; `tests/determinism.rs` holds every face to it).
 #[test]
 fn the_report_graph_is_skolemized_under_a_content_address() {
-    let kernel = inline_kernel();
     let turtle = |data: &str| {
         String::from_utf8(
-            resolve(&kernel, source(&[("data", data), ("shapes", SHAPES)]))
-                .bytes
-                .clone(),
+            resolve(
+                &inline_kernel(),
+                source(&[("data", data), ("shapes", SHAPES)]),
+            )
+            .bytes
+            .clone(),
         )
         .expect("the report face is UTF-8")
     };

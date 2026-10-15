@@ -51,11 +51,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use ikigai_core::{Capability, ContentId, Error, Representation, Result};
+use ikigai_core::{Capability, Error, Representation, Result};
 use ikigai_store::budget::{
     check_query, default_max_overdue, EvaluationBudget, TimeBudget, DEFAULT_BUDGET,
 };
-use oxigraph::io::{RdfFormat, RdfParser, RdfSerializer};
+use oxigraph::io::{RdfFormat, RdfParser};
 use oxigraph::sparql::{CancellationToken, QueryResults, Variable};
 use oxigraph::store::Store;
 use oxrdf::vocab::{rdf, rdfs, xsd};
@@ -65,10 +65,7 @@ use oxrdf::{
 };
 use spargebra::Query;
 
-use crate::{
-    canonical_line, encode_label, repr, Report, ReportResult, Term, JSON, REPORT_SCHEME,
-    SHAPES_ARG, TURTLE,
-};
+use crate::{naming, repr, Report, ReportResult, Term, JSON, SHAPES_ARG, TURTLE};
 
 const SH: &str = "http://www.w3.org/ns/shacl#";
 const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
@@ -283,7 +280,8 @@ impl Constraint {
 }
 
 /// Parse caller Turtle strictly, refusing first any triple-term nesting past
-/// [`crate::MAX_TURTLE_NESTING`]. `role` is the argument the text arrived in.
+/// [`crate::MAX_TURTLE_NESTING`]. `role` is the argument the text arrived in, and names the
+/// graph's blank nodes (see [`naming::by_appearance`]).
 fn parse_turtle(ttl: &str, role: &str) -> Result<Vec<Triple>> {
     crate::depth::check_turtle_nesting(ttl, role)?;
     let triples = RdfParser::from_format(RdfFormat::Turtle)
@@ -308,7 +306,9 @@ fn parse_turtle(ttl: &str, role: &str) -> Result<Vec<Triple>> {
             ),
         });
     }
-    Ok(triples)
+    // The parser's label for a `[ … ]` is random, and a blank node reaches the report: label
+    // every one by where it first appears instead (`data.b0`, `shapes.b0`; ledger #1565).
+    naming::by_appearance(triples, role)
 }
 
 fn graph_of(triples: &[Triple]) -> Graph {
@@ -1674,110 +1674,45 @@ fn report(conforms: bool, results: &[Res]) -> Report {
     }
 }
 
-/// A blank node of the report graph, renamed so the three sources of labels cannot collide:
-/// the nodes this module mints (`report`, `result.N`), and those passed through from the
-/// shapes graph (`shapes.…`) and the data graph (`data.…`).
-fn relabel(term: &RdfTerm, from: &str) -> RdfTerm {
-    match term {
-        RdfTerm::BlankNode(b) => BlankNode::new_unchecked(format!("{from}.{}", b.as_str())).into(),
-        other => other.clone(),
-    }
-}
-
-/// The report graph, skolemized as the rudof path's is: every blank node named
-/// `urn:ikigai:shacl:report:<content id of the report graph>:<label>` (see the crate README).
-fn report_graph(conforms: bool, results: &[Res]) -> Result<Vec<Triple>> {
-    let report_node = RdfTerm::from(BlankNode::new_unchecked("report"));
-    let mut triples: Vec<(RdfTerm, NamedNode, RdfTerm)> = vec![
-        (
+/// The report graph, skolemized as the rudof path's is (see [`crate::REPORT_SCHEME`]): the
+/// nodes this module mints, `report` and `result.N` (results in the validator's own order,
+/// which is deterministic), and those passed through from the shapes and data graphs, already
+/// labeled `shapes.bN`/`data.bN` as they were parsed, so no two sources' labels collide.
+fn report_graph(conforms: bool, results: &[Res]) -> Vec<Triple> {
+    let report_node = BlankNode::new_unchecked("report");
+    let mut triples: Vec<Triple> = vec![
+        Triple::new(
             report_node.clone(),
             rdf::TYPE.into_owned(),
-            sh("ValidationReport").into(),
+            sh("ValidationReport"),
         ),
-        (
-            report_node.clone(),
-            sh("conforms"),
-            Literal::from(conforms).into(),
-        ),
+        Triple::new(report_node.clone(), sh("conforms"), Literal::from(conforms)),
     ];
     for (i, r) in results.iter().enumerate() {
-        let node = RdfTerm::from(BlankNode::new_unchecked(format!("result.{i}")));
-        triples.push((report_node.clone(), sh("result"), node.clone()));
-        triples.push((
-            node.clone(),
-            rdf::TYPE.into_owned(),
-            sh("ValidationResult").into(),
-        ));
-        triples.push((node.clone(), sh("focusNode"), relabel(&r.focus, "data")));
-        triples.push((
-            node.clone(),
-            sh("sourceConstraintComponent"),
-            sh(r.component).into(),
-        ));
-        triples.push((node.clone(), sh("resultSeverity"), sh("Violation").into()));
+        let node = BlankNode::new_unchecked(format!("result.{i}"));
+        triples.push(Triple::new(report_node.clone(), sh("result"), node.clone()));
+        let mut push = |p: NamedNode, o: RdfTerm| triples.push(Triple::new(node.clone(), p, o));
+        push(rdf::TYPE.into_owned(), sh("ValidationResult").into());
+        push(sh("focusNode"), r.focus.clone());
+        push(sh("sourceConstraintComponent"), sh(r.component).into());
+        push(sh("resultSeverity"), sh("Violation").into());
         for m in &r.messages {
-            triples.push((node.clone(), sh("resultMessage"), m.clone().into()));
+            push(sh("resultMessage"), m.clone().into());
         }
-        triples.push((
-            node.clone(),
-            sh("sourceShape"),
-            relabel(&r.source.clone().into(), "shapes"),
-        ));
+        push(sh("sourceShape"), r.source.clone().into());
         if let Some(p) = &r.path {
-            triples.push((node.clone(), sh("resultPath"), p.clone().into()));
+            push(sh("resultPath"), p.clone().into());
         }
         if let Some(v) = &r.value {
-            triples.push((node.clone(), sh("value"), relabel(v, "data")));
+            push(sh("value"), v.clone());
         }
     }
-
-    // The content address of the graph: canonical lines, sorted.
-    let mut lines: Vec<String> = triples
-        .iter()
-        .map(|(s, p, o)| canonical_line(&term_json(s), p.as_str(), &term_json(o)))
-        .collect();
-    lines.sort();
-    lines.dedup();
-    let scheme = format!(
-        "{REPORT_SCHEME}{}:",
-        ContentId::of(lines.join("\n").as_bytes())
-    );
-    let skolem = |term: &RdfTerm| -> Result<RdfTerm> {
-        match term {
-            RdfTerm::BlankNode(b) => {
-                let iri = format!("{scheme}{}", encode_label(b.as_str()));
-                NamedNode::new(&iri).map(RdfTerm::from).map_err(|e| {
-                    Error::Endpoint(format!("urn:shacl:validate: bad skolem IRI `{iri}`: {e}"))
-                })
-            }
-            other => Ok(other.clone()),
-        }
-    };
-    let mut out = Vec::with_capacity(triples.len());
-    for (s, p, o) in &triples {
-        let RdfTerm::NamedNode(subject) = skolem(s)? else {
-            unreachable!("a report subject is a blank node, and is skolemized to an IRI");
-        };
-        out.push(Triple::new(subject, p.clone(), skolem(o)?));
-    }
-    out.sort_by_key(|t| t.to_string());
-    out.dedup();
-    Ok(out)
+    triples
 }
 
+/// The report graph as Turtle, skolemized and sorted (see [`crate::naming`]).
 fn turtle(conforms: bool, results: &[Res]) -> Result<String> {
-    let bad = |e: &dyn std::fmt::Display| {
-        Error::Endpoint(format!("urn:shacl:validate: report serialize error: {e}"))
-    };
-    let mut writer = RdfSerializer::from_format(RdfFormat::Turtle)
-        .with_prefix("sh", SH)
-        .map_err(|e| bad(&e))?
-        .for_writer(Vec::new());
-    for t in report_graph(conforms, results)? {
-        writer.serialize_triple(&t).map_err(|e| bad(&e))?;
-    }
-    let bytes = writer.finish().map_err(|e| bad(&e))?;
-    String::from_utf8(bytes).map_err(|e| bad(&e))
+    naming::turtle(&naming::skolemize(report_graph(conforms, results))?)
 }
 
 /// The capability a library call (no invocation) validates under: none, so the base budget.

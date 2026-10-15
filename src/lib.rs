@@ -40,6 +40,7 @@ use ikigai_core::{
 
 pub mod core_shacl;
 mod depth;
+mod naming;
 #[cfg(feature = "rudof")]
 mod rudof_engine;
 pub use depth::{MAX_DATA_RECURSION, MAX_SHAPE_DEPTH, MAX_TURTLE_NESTING};
@@ -365,31 +366,52 @@ fn validate(
 }
 
 /// The prefix every node of the report graph is named under:
-/// `urn:ikigai:shacl:report:<content id of the report graph>:<blank-node label>`. A
-/// consumer can recognize a node this crate minted by this prefix, and nothing else in
-/// a report carries it.
+/// `urn:ikigai:shacl:report:<content id of the report graph>:<blank-node label>`. A consumer
+/// can recognize a node this crate minted by this prefix, and nothing else in a report carries
+/// it.
+///
+/// Every part is a function of the inputs, never of the run that made it (ledger #1565): the
+/// content id is that of the report graph, and the label is stable too. A node from an input
+/// graph is labeled by order of first appearance in that document, `data.b<N>` or
+/// `shapes.b<N>` (the parser's own label for `[ … ]` is random, so it is never used, and an
+/// explicit `_:alice` is renamed alike); a node the validator mints is `report`, or a name
+/// derived from its content. The JSON face and `sh:message` templates use the same labels
+/// (`_:data.b0`). Pinned:
+///
+/// ```
+/// let shapes = r#"@prefix sh: <http://www.w3.org/ns/shacl#> .
+/// @prefix : <http://example.org/> .
+/// :PersonShape a sh:NodeShape ; sh:targetClass :Person ;
+///   sh:property [ sh:path :name ; sh:minCount 1 ] ."#;
+/// let data = "@prefix : <http://example.org/> . [] a :Person .";
+///
+/// let turtle = ikigai_shacl::validate_turtle(data, shapes).unwrap();
+/// let mut nodes: Vec<&str> = turtle
+///     .split(['<', '>'])
+///     .filter(|s| s.starts_with(ikigai_shacl::REPORT_SCHEME))
+///     .collect();
+/// nodes.sort_unstable();
+/// nodes.dedup();
+/// // The report, its one result, the blank property shape and the blank focus node, each
+/// // `<scheme><content id>:<label>`, and no blank node left.
+/// assert_eq!(nodes.len(), 4, "{turtle}");
+/// let labels: Vec<&str> = nodes
+///     .iter()
+///     .map(|n| n.strip_prefix(ikigai_shacl::REPORT_SCHEME).unwrap())
+///     .map(|rest| {
+///         let (content_id, label) = rest.rsplit_once(':').unwrap();
+///         assert!(content_id.starts_with("b3:"), "{content_id}");
+///         label
+///     })
+///     .collect();
+/// for label in ["report", "data.b0", "shapes.b0"] {
+///     assert!(labels.contains(&label), "{label} in {labels:?}");
+/// }
+/// assert!(!turtle.contains("_:"));
+/// // And the same inputs give the same bytes, every time.
+/// assert_eq!(turtle, ikigai_shacl::validate_turtle(data, shapes).unwrap());
+/// ```
 pub const REPORT_SCHEME: &str = "urn:ikigai:shacl:report:";
-
-/// Percent-encode a blank-node label down to the URN-safe set. RDF 1.1 admits `:`,
-/// `.` and non-ASCII in a label; this crate's minted IRIs stay in
-/// `[A-Za-z0-9._-]` so a consumer can split the scheme from the label on `:`.
-pub(crate) fn encode_label(label: &str) -> String {
-    label
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
-/// One triple as a canonical, escaping-safe line: the JSON encoding of its three
-/// terms. Used only to content-address a report graph, so what matters is that equal
-/// graphs render equally and unequal ones do not — [`Term`]'s field order is fixed
-/// by its `serde` derive. Both engines name their report nodes through it.
-pub(crate) fn canonical_line(subject: &Term, predicate: &str, object: &Term) -> String {
-    serde_json::to_string(&(subject, predicate, object)).expect("a Term is always serializable")
-}
 
 /// A representation from a media type + body.
 pub(crate) fn repr(media: &str, body: String) -> Representation {
