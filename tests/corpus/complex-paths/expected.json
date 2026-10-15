@@ -1,0 +1,25 @@
+{
+  "conforms": false,
+  "violations": [
+    {
+      "focus_node": "http://example.org/dave",
+      "path": "(http://example.org/email | http://example.org/phone)",
+      "component": "http://www.w3.org/ns/shacl#MinCountConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/dave",
+      "path": "(http://example.org/employer / http://example.org/name)",
+      "component": "http://www.w3.org/ns/shacl#MinCountConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/dave",
+      "path": "(http://example.org/manager)+",
+      "component": "http://www.w3.org/ns/shacl#MinCountConstraintComponent"
+    },
+    {
+      "focus_node": "http://example.org/dave",
+      "path": "^(http://example.org/member)",
+      "component": "http://www.w3.org/ns/shacl#MinCountConstraintComponent"
+    }
+  ]
+}

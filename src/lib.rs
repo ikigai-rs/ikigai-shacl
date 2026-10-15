@@ -98,7 +98,8 @@ async fn resolve_shapes(inv: &Invocation<'_>, uri: &str) -> Result<Representatio
 pub struct Violation {
     /// The focus node that failed (IRI / blank-node id).
     pub focus_node: String,
-    /// The `sh:resultPath` (a property-path predicate IRI), if any.
+    /// The `sh:resultPath`, if any, rendered as [`ReportResult::path`] says: an IRI only for a
+    /// predicate path, and otherwise a path expression that is not an IRI.
     pub path: Option<String>,
     /// The `sh:sourceConstraintComponent` IRI (e.g. `…#MinCountConstraintComponent`).
     pub component: String,
@@ -178,9 +179,54 @@ pub(crate) const JSON: &str = "application/json";
 pub struct ReportResult {
     /// The focus node that failed (IRI / blank-node id).
     pub focus_node: String,
-    /// The `sh:resultPath` (a property-path predicate IRI), if the result has one. A
-    /// constraint on a **node** shape has none unless it binds `?path` itself — a
-    /// `sh:sparql` on a node shape reports `null` here by the SHACL spec, not by omission.
+    /// The `sh:resultPath`, if the result has one, as a string. A constraint on a **node**
+    /// shape has none unless it binds `?path` itself — a `sh:sparql` on a node shape reports
+    /// `null` here by the SHACL spec, not by omission.
+    ///
+    /// **It is an IRI only when the path is a single predicate** (ledger #204):
+    ///
+    /// - A predicate path is its IRI, bare: `http://example.org/name`.
+    /// - Any other path is rudof's rendering of the path expression, which is **not an IRI**
+    ///   and not SPARQL either, since its IRIs are unbracketed: every compound is in
+    ///   parentheses, an alternative `(a | b)`, a sequence `(a / b)`, an inverse `^(a)`, and
+    ///   `(a)*`, `(a)+`, `(a)?` for zero-or-more, one-or-more and zero-or-one, nesting as the
+    ///   path does. A predicate IRI never begins with `(` or `^`, so that tells the two apart.
+    /// - With the `rudof` feature off, the subset validator refuses a shapes graph whose path
+    ///   is not a predicate, so it only ever reports the first form.
+    ///
+    /// The parity case `tests/corpus/complex-paths` holds shacl-engine to the same strings, and
+    /// this pins both forms, so a rudof release that renders a path differently fails here:
+    ///
+    /// ```
+    /// let shapes = r#"@prefix sh: <http://www.w3.org/ns/shacl#> .
+    /// @prefix : <http://example.org/> .
+    /// :S a sh:NodeShape ; sh:targetNode :dave ;
+    ///   sh:property [ sh:path :name ; sh:minCount 1 ] ;
+    ///   sh:property [ sh:path [ sh:alternativePath ( :email :phone ) ] ; sh:minCount 1 ] ;
+    ///   sh:property [ sh:path ( :employer :name ) ; sh:minCount 1 ] ;
+    ///   sh:property [ sh:path [ sh:inversePath :member ] ; sh:minCount 1 ] ."#;
+    ///
+    /// let report = ikigai_shacl::validate_report("", shapes);
+    /// if cfg!(feature = "rudof") {
+    ///     let paths: Vec<String> = report
+    ///         .unwrap()
+    ///         .violations
+    ///         .into_iter()
+    ///         .map(|v| v.path.unwrap())
+    ///         .collect();
+    ///     assert_eq!(
+    ///         paths,
+    ///         [
+    ///             "(http://example.org/email | http://example.org/phone)",
+    ///             "(http://example.org/employer / http://example.org/name)",
+    ///             "^(http://example.org/member)",
+    ///             "http://example.org/name",
+    ///         ]
+    ///     );
+    /// } else {
+    ///     assert!(report.is_err(), "the subset refuses a complex path");
+    /// }
+    /// ```
     pub path: Option<String>,
     /// The `sh:sourceConstraintComponent` IRI (e.g. `…#MinCountConstraintComponent`).
     pub component: String,

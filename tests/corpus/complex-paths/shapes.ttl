@@ -1,0 +1,11 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <http://example.org/> .
+# Four property shapes whose sh:path is NOT a predicate IRI (ledger #204): an alternative,
+# a sequence, an inverse and a one-or-more path. Each result's `path` is the rendered path
+# expression, not an IRI (see `Violation::path`).
+ex:PersonShape a sh:NodeShape ;
+  sh:targetClass ex:Person ;
+  sh:property [ sh:path [ sh:alternativePath ( ex:email ex:phone ) ] ; sh:minCount 1 ] ;
+  sh:property [ sh:path ( ex:employer ex:name ) ; sh:minCount 1 ] ;
+  sh:property [ sh:path [ sh:inversePath ex:member ] ; sh:minCount 1 ] ;
+  sh:property [ sh:path [ sh:oneOrMorePath ex:manager ] ; sh:minCount 1 ] .

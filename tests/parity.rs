@@ -9,6 +9,11 @@ use ikigai_shacl::{validate_outcome, ValidationOutcome};
 use std::fs;
 use std::path::Path;
 
+/// The cases whose shapes the subset validator (the build with `rudof` off) refuses by name:
+/// `complex-paths` pins the rendering of a path that is not a predicate IRI (ledger #204), and
+/// the subset takes only predicate paths. In that build each must be refused, never answered.
+const SUBSET_REFUSES: &[&str] = &["complex-paths"];
+
 fn corpus_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")
 }
@@ -29,6 +34,18 @@ fn native_validator_matches_the_parity_corpus() {
             continue;
         }
         let name = case.file_name().unwrap().to_string_lossy().to_string();
+        if !cfg!(feature = "rudof") && SUBSET_REFUSES.contains(&name.as_str()) {
+            let data = fs::read_to_string(case.join("data.ttl")).expect("data.ttl");
+            let shapes = fs::read_to_string(case.join("shapes.ttl")).expect("shapes.ttl");
+            let err = validate_outcome(&data, &shapes)
+                .expect_err(&format!("[{name}] the subset validator answered"));
+            assert!(
+                err.to_string()
+                    .contains("which the SHACL subset validator does not implement"),
+                "[{name}] {err}"
+            );
+            continue;
+        }
         let got = outcome(&case);
 
         let expected_path = case.join("expected.json");
