@@ -313,7 +313,9 @@ impl Report {
 }
 
 /// Validate `data_ttl` against `shapes_ttl`, returning the full [`Report`] — what the
-/// `application/json` face serializes. rudof with the `rudof` feature, else [`core_shacl`].
+/// `application/json` face serializes. rudof with the `rudof` feature, else [`core_shacl`];
+/// either way within the base time budget (5 s), past which it is refused with a typed
+/// `Error::Timeout` (a library call carries no capability to grant more).
 pub fn validate_report(data_ttl: &str, shapes_ttl: &str) -> Result<Report> {
     #[cfg(feature = "rudof")]
     {
@@ -332,7 +334,8 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 }
 
 /// Validate `data_ttl` against `shapes_ttl`, returning the report graph as Turtle — what the
-/// default `text/turtle` face serves. rudof with the `rudof` feature, else [`core_shacl`].
+/// default `text/turtle` face serves. rudof with the `rudof` feature, else [`core_shacl`];
+/// within the base time budget, like [`validate_report`].
 pub fn validate_turtle(data_ttl: &str, shapes_ttl: &str) -> Result<String> {
     #[cfg(feature = "rudof")]
     {
@@ -346,8 +349,8 @@ pub fn validate_turtle(data_ttl: &str, shapes_ttl: &str) -> Result<String> {
 
 /// Validate, rendering per `as_type`: `application/json` → the [`Report`]; else the SHACL
 /// report graph as Turtle (the report *is* RDF). Same results, same resolved messages, on
-/// both faces. `capability` is the caller's, which decides the time budget the subset
-/// validator's SPARQL runs under.
+/// both faces. `capability` is the caller's, which decides the time budget either validator
+/// runs under (ledger #1735 gave the rudof path the subset path's).
 fn validate(
     data_ttl: &str,
     shapes_ttl: &str,
@@ -356,8 +359,7 @@ fn validate(
 ) -> Result<Representation> {
     #[cfg(feature = "rudof")]
     {
-        let _ = capability;
-        rudof_engine::validate(data_ttl, shapes_ttl, as_type)
+        rudof_engine::validate(data_ttl, shapes_ttl, as_type, capability)
     }
     #[cfg(not(feature = "rudof"))]
     {

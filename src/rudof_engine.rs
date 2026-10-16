@@ -8,7 +8,7 @@
 
 use crate::{depth, naming};
 use crate::{repr, QuotedTriple, Report, ReportResult, Term, JSON, SHAPES_ARG, TURTLE, XSD_STRING};
-use ikigai_core::{Error, Representation, Result};
+use ikigai_core::{Capability, Error, Representation, Result};
 use rudof_rdf::rdf_core::term::literal::ConcreteLiteral;
 use rudof_rdf::rdf_core::term::{IriOrBlankNode, Object, Triple as RdfTriple};
 use rudof_rdf::rdf_core::{BuildRDF, NeighsRDF, RDFFormat, Rdf, SHACLPath};
@@ -502,60 +502,125 @@ fn resolve_messages(report: ValidationReport) -> ValidationReport {
     report.with_results(results)
 }
 
-/// Validate `data_ttl` against `shapes_ttl` with rudof, returning the full [`Report`].
+/// Validate `data_ttl` against `shapes_ttl` with rudof, returning the full [`Report`], within
+/// the base time budget (a library call carries no capability).
 pub(crate) fn validate_report(data_ttl: &str, shapes_ttl: &str) -> Result<Report> {
-    Ok(report_from(&resolve_messages(run(data_ttl, shapes_ttl)?)))
+    let capability = crate::core_shacl::library_capability();
+    run(data_ttl, shapes_ttl, &capability, |report| {
+        Ok(report_from(&resolve_messages(report)))
+    })
 }
 
-/// Validate `data_ttl` against `shapes_ttl` with rudof, returning the report graph as Turtle.
+/// Validate `data_ttl` against `shapes_ttl` with rudof, returning the report graph as Turtle,
+/// within the base time budget.
 pub(crate) fn validate_turtle(data_ttl: &str, shapes_ttl: &str) -> Result<String> {
-    report_turtle(&resolve_messages(run(data_ttl, shapes_ttl)?))
+    let capability = crate::core_shacl::library_capability();
+    run(data_ttl, shapes_ttl, &capability, |report| {
+        report_turtle(&resolve_messages(report))
+    })
 }
 
-/// Run the validator: data graph + compiled shapes → rudof ValidationReport. Every query
-/// rudof will parse is bounded first (see [`bound_queries`]), and so is every depth the
-/// caller's Turtle can reach (see the `depth` module). Then both halves run on sized stacks,
-/// because LENGTH recurses too, and length is not refused: compiling on a thread sized from
-/// the shapes text (rudof parses an RDF list one call per element), and checking every query
-/// for a `SERVICE` ([`refuse_service_in`]), parsing the data and validating on one sized for the
+/// Run the validator: data graph + compiled shapes → rudof ValidationReport, rendered by
+/// `render`, all of it within the time budget `capability` gets (ledger #1735).
+///
+/// Every query rudof will parse is bounded first (see [`bound_queries`]), and so is every depth
+/// the caller's Turtle can reach (see the `depth` module). Then both halves run on sized stacks,
+/// because LENGTH recurses too, and length is not refused: compiling on a thread sized from the
+/// shapes text (rudof parses an RDF list one call per element), and checking every query for a
+/// `SERVICE` ([`refuse_service_in`]), parsing the data and validating on one sized for the
 /// longest query, with rudof's validator on a one-thread pool of that size ([`on_rudof_pool`]),
 /// grown by what the recursion that follows the data can reach once the data is parsed
 /// ([`depth::data_recursion`], ledger #1326). On wasm there is no thread and both run inline.
-fn run(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationReport> {
-    let (schema, structure, queries) = ikigai_store::limits::on_sparql_stack(shapes_ttl, || {
-        let (schema, structure) = compile_shapes(shapes_ttl)?;
+///
+/// # The time budget
+///
+/// The whole of it, compiling, parsing, validating and rendering, runs inside the
+/// [`EvaluationBudget`](ikigai_store::budget::EvaluationBudget) the subset validator runs in
+/// (`core_shacl::budget`, ONE per process, shared by both validators), whose thread is the one
+/// the shapes were compiled on before. So the rudof path keeps the subset path's promises, with
+/// the same grants: 5 s for an ordinary caller, more by a `urn:cap:store:budget:<ms>` grant,
+/// the 120 s ceiling for root, and past it the caller is answered with a typed
+/// [`Error::Timeout`] naming the budget, never a partial report. (On wasm the budget runs its
+/// work inline, so there, as on the subset path, nothing bounds the time.)
+///
+/// ⚠ **What it cannot do is stop rudof.** rudof 0.3.24 offers no cancellation (no token, no
+/// callback between shapes or focus nodes; `ShaclConfig` has no deadline), and
+/// `ShaclProcessor` is implemented only for its own `RdfData`, so nothing can be wrapped around
+/// the graph to look at a token either. So the budget's token is checked only at the seams
+/// this crate owns: after the shapes compile, after the data parses, and before rendering. A
+/// validation past its budget inside rudof runs on to its end with nobody waiting for it: its
+/// threads (the budget's, the sized one, and the pool's), one core, and the parsed graphs, the
+/// cache and the report it builds stay held until rudof returns. Measured 2026-10-16 (release,
+/// `ikigai_vocab::SHAPES` over a chain of `n` piped steps): 1,600 steps 0.96 s, 3,200 steps
+/// 3.6 s, 6,400 steps 13.5 s, 10,000 steps 62 s, so a 20,000-step plan holds a core for
+/// minutes after its caller was answered. That work is COUNTED and CAPPED by the budget: at
+/// most `max_overdue` validations, by either validator, run at once (a validation waits within
+/// its own budget for a slot), and while that many are overdue every new one is refused at once
+/// with a transient [`Error::Unavailable`] (`tests/rudof_time_budget.rs`).
+fn run<T, R>(data_ttl: &str, shapes_ttl: &str, capability: &Capability, render: R) -> Result<T>
+where
+    T: Send + 'static,
+    R: FnOnce(ValidationReport) -> Result<T> + Send + 'static,
+{
+    let data_ttl = data_ttl.to_string();
+    let shapes = shapes_ttl.to_string();
+    // The budget's thread is sized for the shapes text, as `on_sparql_stack(shapes_ttl)` sized
+    // the compile's thread before: the compile runs on it directly.
+    crate::core_shacl::budget().run(shapes_ttl, capability, None, move |token| {
+        let (schema, structure) = compile_shapes(&shapes)?;
         let queries = bound_queries(&schema)?;
-        Ok((schema, structure, queries))
-    })?;
-    let longest = queries.iter().max_by_key(|q| q.len()).cloned();
-    ikigai_store::limits::on_sparql_stack(longest.as_deref().unwrap_or(""), move || {
-        // No `SERVICE` reaches rudof's evaluator: "Caller SPARQL never reaches the network".
-        for query in &queries {
-            refuse_service_in(query)?;
-        }
-        let data = parse_data(data_ttl, "data")?;
-        // A shape that refers back to itself along a path is validated one call per link of
-        // the data: refuse past the bound, and grow the validator's stack for what it admits.
-        let levels = depth::data_recursion(&data, &structure)?;
-        let mut validator: DataValidation = data.into();
-        // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release — see
-        // the upper bounds in Cargo.toml). The defaults are the pre-0.3.17 behavior:
-        // violations kept, conformance evidence off, cautious/LFP recursion semantics.
-        let config = ShaclConfig::default();
-        // The pool's thread is sized like this one, for the longest query, plus the recursion
-        // the data admits.
-        let longest = queries
-            .iter()
-            .max_by_key(|q| q.len())
-            .map_or("", String::as_str);
-        let stack = ikigai_store::limits::sparql_stack_size(longest)
-            .saturating_add(depth::recursion_stack(levels));
-        on_rudof_pool(stack, || {
-            validator
-                .validate(&schema, &ShaclValidationMode::Native, &config)
-                .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: validation error: {e}")))
-        })
+        still_wanted(token)?;
+        let longest = queries.iter().max_by_key(|q| q.len()).cloned();
+        let report =
+            ikigai_store::limits::on_sparql_stack(longest.as_deref().unwrap_or(""), move || {
+                // No `SERVICE` reaches rudof's evaluator: "Caller SPARQL never reaches the
+                // network".
+                for query in &queries {
+                    refuse_service_in(query)?;
+                }
+                let data = parse_data(&data_ttl, "data")?;
+                // A shape that refers back to itself along a path is validated one call per
+                // link of the data: refuse past the bound, and grow the validator's stack for
+                // what it admits.
+                let levels = depth::data_recursion(&data, &structure)?;
+                still_wanted(token)?;
+                let mut validator: DataValidation = data.into();
+                // `config` is the third argument as of shacl 0.3.17 (added in a PATCH release —
+                // see the upper bounds in Cargo.toml). The defaults are the pre-0.3.17
+                // behavior: violations kept, conformance evidence off, cautious/LFP recursion
+                // semantics.
+                let config = ShaclConfig::default();
+                // The pool's thread is sized like this one, for the longest query, plus the
+                // recursion the data admits.
+                let longest = queries
+                    .iter()
+                    .max_by_key(|q| q.len())
+                    .map_or("", String::as_str);
+                let stack = ikigai_store::limits::sparql_stack_size(longest)
+                    .saturating_add(depth::recursion_stack(levels));
+                on_rudof_pool(stack, || {
+                    validator
+                        .validate(&schema, &ShaclValidationMode::Native, &config)
+                        .map_err(|e| {
+                            Error::Endpoint(format!("urn:shacl:validate: validation error: {e}"))
+                        })
+                })
+            })?;
+        still_wanted(token)?;
+        render(report)
     })
+}
+
+/// Refuse to go on once the caller has been answered with a timeout. The refusal reaches
+/// nobody (the caller already has its `Timeout`); it only ends the work at a seam this crate
+/// owns, since rudof cannot be stopped inside `validate` (see [`run`]).
+fn still_wanted(token: &oxigraph::sparql::CancellationToken) -> Result<()> {
+    if token.is_cancelled() {
+        return Err(Error::Endpoint(
+            "urn:shacl:validate: validation canceled (past its time budget)".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Run rudof's validator on a ONE-thread rayon pool whose thread has `stack` bytes (at least
@@ -600,18 +665,26 @@ where
 
 /// Validate, rendering per `as_type`: `application/json` → the [`Report`]; else the SHACL
 /// report graph as Turtle (the report *is* RDF). Same results, same resolved messages, on
-/// both faces.
-pub(crate) fn validate(data_ttl: &str, shapes_ttl: &str, as_type: &str) -> Result<Representation> {
-    let report = resolve_messages(run(data_ttl, shapes_ttl)?);
-    if as_type.split(';').next().unwrap_or("").trim() == JSON {
-        Ok(repr(
-            JSON,
-            serde_json::to_string_pretty(&report_from(&report))
-                .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: json error: {e}")))?,
-        ))
-    } else {
-        Ok(repr(TURTLE, report_turtle(&report)?))
-    }
+/// both faces. `capability` is the caller's, and decides the time budget (see [`run`]).
+pub(crate) fn validate(
+    data_ttl: &str,
+    shapes_ttl: &str,
+    as_type: &str,
+    capability: &Capability,
+) -> Result<Representation> {
+    let json = as_type.split(';').next().unwrap_or("").trim() == JSON;
+    run(data_ttl, shapes_ttl, capability, move |report| {
+        let report = resolve_messages(report);
+        if json {
+            Ok(repr(
+                JSON,
+                serde_json::to_string_pretty(&report_from(&report))
+                    .map_err(|e| Error::Endpoint(format!("urn:shacl:validate: json error: {e}")))?,
+            ))
+        } else {
+            Ok(repr(TURTLE, report_turtle(&report)?))
+        }
+    })
 }
 
 /// The report graph as Turtle: rudof's `to_rdf`, with the nodes it minted renamed by content,
