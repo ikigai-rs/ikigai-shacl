@@ -1502,12 +1502,13 @@ fn compare(a: &Literal, b: &Literal) -> Option<std::cmp::Ordering> {
     }
 }
 
-/// The one budget every subset validation shares, so its overdue count caps the cores runaway
-/// SPARQL can hold (`EvaluationBudget`: "make ONE per host and clone it"). The store's time
-/// defaults: 5 s for an ordinary caller, more only by a `urn:cap:store:budget:<ms>` grant, the
-/// 120 s ceiling for root. The overdue cap is this crate's own: [`MAX_OVERDUE_FLOOR`] (ledger
+/// The one budget every validation in the process shares, by either validator (the rudof path
+/// runs in it too since ledger #1735), so its overdue count caps the cores runaway validations
+/// can hold (`EvaluationBudget`: "make ONE per host and clone it"). The store's time defaults:
+/// 5 s for an ordinary caller, more only by a `urn:cap:store:budget:<ms>` grant, the 120 s
+/// ceiling for root. The overdue cap is this crate's own: [`MAX_OVERDUE_FLOOR`] (ledger
 /// #1510).
-fn budget() -> &'static EvaluationBudget {
+pub(crate) fn budget() -> &'static EvaluationBudget {
     static BUDGET: OnceLock<EvaluationBudget> = OnceLock::new();
     BUDGET.get_or_init(|| {
         EvaluationBudget::new(TimeBudget::new(DEFAULT_BUDGET).with_max_overdue(max_overdue()))
@@ -1716,7 +1717,7 @@ fn turtle(conforms: bool, results: &[Res]) -> Result<String> {
 }
 
 /// The capability a library call (no invocation) validates under: none, so the base budget.
-fn library_capability() -> Capability {
+pub(crate) fn library_capability() -> Capability {
     Capability::scoped(Vec::<String>::new())
 }
 

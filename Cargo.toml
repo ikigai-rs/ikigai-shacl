@@ -72,14 +72,20 @@ async-trait = "0.1"
 # `persistent` (RocksDB) stays out, so this adds only the store crate and a `toml` 0.8 family
 # to the graph (oxigraph and spargebra are rudof's already), and it builds for wasm, where
 # `on_sparql_stack` runs inline. (Its own `ikigai-core` floor, 0.1.57, sits below ours.)
-# ⚠ `^0.2.18` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976 folds the four copies of
+# ⚠ `^0.2.21` is a CEILING too (<0.3.0). ★ Temporary home: ledger #976 folds the four copies of
 # `limits.rs` into one shared crate, and this line moves to it.
 #
-# 0.2.18 is the floor now (ledger #1176): `budget::EvaluationBudget`, the TIME budget the subset
-# validator (`src/core_shacl.rs`) runs every `sh:select` under, and `budget::check_query`, the
-# algebra bound it applies before planning, landed there (ledger #1327). The rudof path does not
-# need them; the subset validator, which every build compiles, does.
-ikigai-store = { version = "0.2.18", default-features = false }
+# `budget::EvaluationBudget`, the TIME budget both validators run under, and
+# `budget::check_query`, the algebra bound the subset validator applies before planning, landed
+# in 0.2.18 (ledger #1327, #1176). 0.2.21 is the floor now, for BEHAVIOR rather than API (ledger
+# #1735): it is the release where a budget reserves a slot for each evaluation IN FLIGHT
+# (ledger #1427). Before it the cap was checked only against the overdue count, so any number of
+# validations arriving together all started, and all could outlive their callers. rudof cannot
+# be stopped partway, so that cap is the only bound on the cores abandoned rudof validations
+# hold. 0.2.18 and 0.2.19 (there is no 0.2.20) have every API used here and do not keep that
+# promise: `tests/rudof_time_budget.rs` sends one validation more than the cap and needs it
+# refused, and against 0.2.19 all of them start (measured 2026-10-16).
+ikigai-store = { version = "0.2.21", default-features = false }
 # The pool rudof's validator runs in (`on_rudof_pool`, ledger #1102): rudof splits a level of two
 # or more shapes with `par_iter_mut`, which runs on the global pool's 2 MiB workers unless it is
 # called from inside a pool of ours. ⚠ That only holds if this is the SAME rayon-core rudof's
