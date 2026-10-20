@@ -1,5 +1,5 @@
 # Source: derived for ikigai-shacl from ikigai-vocab tests/fixtures/plan-linkcheck.ttl (a fork, an argument and a parameter); breaks it: a branch of a fork that is not an ik:Fork.
-# expect: urn:ikigai:shape:step:forkOf ClassConstraintComponent
+# expect: urn:ikigai:shape:stage:forkOf ClassConstraintComponent
 
 @prefix ik: <https://ikigai-rs.dev/ns#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
