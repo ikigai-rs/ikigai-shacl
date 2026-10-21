@@ -167,8 +167,8 @@ fn inline() {
     assert_eq!(report.actions, 1, "one Source action: {report}");
     assert_eq!(
         report.checks.skipped().count(),
-        0,
-        "every check runs: {report}"
+        1,
+        "every check runs but FAILURES, which is off until a suite opts in: {report}"
     );
 }
 
@@ -190,8 +190,8 @@ fn referenced() {
     assert_eq!(report.actions, 2, "one Source action each: {report}");
     assert_eq!(
         report.checks.skipped().count(),
-        0,
-        "every check runs: {report}"
+        1,
+        "every check runs but FAILURES, which is off until a suite opts in: {report}"
     );
 }
 

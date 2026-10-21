@@ -198,14 +198,19 @@ module = [
 # `executor::block_on`, which the integration tests drive the kernel with, in every feature
 # combination (the normal dependency above is `module`-only).
 futures = "0.3"
-# The module recipe as one test (tests/conformance.rs). 0.8.0 is the floor for REQUIRED (each
-# required by-value input dropped must be refused, typed; ledger #329), the fourteenth check the
-# test asserts runs; VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.8.0` is a CEILING
-# (<0.9.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
-# through 0.7 and 0.8, and the test kept reporting green against the old definition of "done".
-# Raise it deliberately when the suite moves.
-ikigai-conformance = "0.8.0"
+# The module recipe as one test (tests/conformance.rs). 0.9.0 added core 0.1.105's contract-shape
+# checks (REQUIRED probes input groups, OUTPUTS honors output_from, PIPELINE's named-only line,
+# VALIDATE refuses a default on a binding) and RECOMPUTE; 0.10.0 adds FAILURES, OFF unless a suite
+# opts in (`Suite::check_failures()`; not yet, so the report carries one `skipped: FAILURES`).
+# REQUIRED (0.8.0), VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.10.0` is a CEILING
+# (<0.11.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
+# through 0.7 and 0.8, and at "0.8.0" past 0.9, and the test kept reporting green against the old
+# definition of "done". Raise it deliberately when the suite moves.
+ikigai-conformance = "0.10.0"
 # The shapes the plan doors validate against, which `tests/differential.rs` runs both validators
-# over (ledger #1176). 0.1.98 is ikigai-cli's own floor (past the yanked 0.1.97); `SHAPES` is
-# older. ⚠ `^0.1.98` is a CEILING too (<0.2.0).
-ikigai-vocab = "0.1.98"
+# over (ledger #1176). 0.1.108 is the floor because the plan corpus names the shapes that
+# `SHAPES` reports from (tests/plans/*.ttl `# expect:`), and by 0.1.108 a step's binds / mapOver /
+# forkOf / order shapes are the shared `urn:ikigai:shape:stage:*` (they were `step:*` at 0.1.103);
+# conformance 0.10.0 resolves vocab 0.1.108 whatever this says. ⚠ `^0.1.108` is a CEILING too
+# (<0.2.0).
+ikigai-vocab = "0.1.108"

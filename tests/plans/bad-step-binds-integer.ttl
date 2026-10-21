@@ -1,5 +1,5 @@
 # Source: derived for ikigai-shacl from the `pure` plan in ikigai-cli crates/ikigai-engine/tests/plan_eval.rs; breaks it: a bound name that is not a string.
-# expect: urn:ikigai:shape:step:binds DatatypeConstraintComponent
+# expect: urn:ikigai:shape:stage:binds DatatypeConstraintComponent
 
 @prefix ik: <https://ikigai-rs.dev/ns#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
