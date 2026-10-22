@@ -13,19 +13,27 @@ jobs:
     # it exists for, has only been possible since the rudof floor moved to 0.3.22 (ledger
     # #206; see the note in Cargo.toml).
     #
-    # The subset build: `default-features = false`, what a host without rudof links
-    # (ledger #1176). `no-default-features` lints, tests and documents it (and lints its wasm32
-    # lib, without `wasm-features`), and the forbid list checks it stays free of rudof, the
-    # network stack and the async runtime it exists to avoid. `oxhttp` stands for oxigraph's
-    # `http-client` feature, which is exactly `["oxhttp"]` in every oxigraph 0.5.x, and oxhttp
-    # is a normal dependency on the host target. The `futures` facade is `module`-only (ledger
-    # #1396): without it the subset links exactly `ikigai-store`'s graph.
+    # The core-only build: `default-features = false`, the subset validator's core constraints
+    # with no SPARQL (ledger #1176, #2107), what an in-page wasm kernel links. `no-default-features`
+    # lints, tests and documents it, and lints its wasm32 lib (without `wasm-features`), so the
+    # wasm build of the light validator is checked on every change. The forbid list checks it
+    # stays free of rudof, the network stack and the async runtime, and, since 0.4.0, of the
+    # SPARQL stack the `sparql` feature adds: oxigraph, its store and evaluator, and
+    # ikigai-store. `oxhttp` stands for oxigraph's `http-client` feature, which is exactly
+    # `["oxhttp"]` in every oxigraph 0.5.x. The `futures` facade is `module`-only (ledger #1396).
+    #
+    # ⚠ The middle build, `default-features = false, features = ["sparql"]` (what ikigai-gonk's
+    # plan doors need), has no job of its own: rust.yml can add a feature set to the defaults but
+    # cannot combine one with `--no-default-features`. Its code is the subset with SPARQL, which
+    # every default-feature job compiles and tests (`rudof` implies `sparql`, and
+    # `core_shacl::validate_report` is the subset in every build); what only it does is serve the
+    # endpoint from the subset with SPARQL and leave oxrdf's `rdf-12` off.
     with:
       features: module
       wasm-lib: true
       wasm-features: module
       no-default-features: true
-      no-default-features-forbid: "reqwest hyper tokio rustls oxhttp rayon shacl sparql_service rudof_* futures"
+      no-default-features-forbid: "reqwest hyper tokio rustls oxhttp rayon shacl sparql_service rudof_* futures oxigraph ikigai-store spareval spargebra sparopt sparesults oxrocksdb-sys"
 
   # The other half of the parity contract: shacl-engine (the browser validator) must produce
   # the same outcome as rudof for every case in tests/corpus/ — both assert the same

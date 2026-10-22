@@ -3,11 +3,11 @@
 //! `urn:shacl:validate` is `.cacheable()`, so its answer must be the same bytes on every run.
 //! Three things made it differ, and each is fixed where it arises:
 //!
-//! 1. **The parser's blank-node labels.** oxigraph's Turtle parser mints a random label for every
-//!    `[ … ]`, and those labels are the report's: a blank `sh:property` shape is a
-//!    `sh:sourceShape`, a blank data node a `sh:focusNode`. So each input graph is relabeled
-//!    as it is parsed, by order of first appearance in the document: `{role}.b{n}`, where `role`
-//!    is `data` or `shapes` ([`by_appearance`]). That is a function of the input text, costs
+//! 1. **The parser's blank-node labels.** The Turtle parser (oxttl, which oxigraph's `io` wraps)
+//!    mints a random label for every `[ … ]`, and those labels are the report's: a blank
+//!    `sh:property` shape is a `sh:sourceShape`, a blank data node a `sh:focusNode`. So each
+//!    input graph is relabeled as it is parsed, by order of first appearance in the document:
+//!    `{role}.b{n}`, where `role` is `data` or `shapes` ([`by_appearance`]). That is a function of the input text, costs
 //!    one pass, and keeps the two graphs' labels apart.
 //! 2. **The nodes rudof mints.** rudof's `to_rdf` numbers the report, its results and each
 //!    complex `sh:resultPath` from a counter, in the order its results came back, which varies.
@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use ikigai_core::{ContentId, Error, Result};
-use oxigraph::io::{RdfFormat, RdfSerializer};
 use oxrdf::{BlankNode, NamedNode, NamedOrBlankNode, Triple};
+use oxttl::TurtleSerializer;
 
 use crate::REPORT_SCHEME;
 
@@ -238,7 +238,7 @@ pub(crate) fn turtle(triples: &[Triple]) -> Result<String> {
     let bad = |e: &dyn std::fmt::Display| {
         Error::Endpoint(format!("urn:shacl:validate: report serialize error: {e}"))
     };
-    let mut writer = RdfSerializer::from_format(RdfFormat::Turtle)
+    let mut writer = TurtleSerializer::new()
         .with_prefix("sh", SH)
         .map_err(|e| bad(&e))?
         .for_writer(Vec::new());

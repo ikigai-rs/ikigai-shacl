@@ -12,6 +12,10 @@
 //! where the cap is four. The cap is now at least two (ledger #1510, `tests/one_runaway.rs`), but
 //! the straggler still holds a slot for minutes, so this stays a separate test binary: a separate
 //! process, and so a separate budget.
+//!
+//! Only a build with the `sparql` feature has a time budget (and a `sh:select` to run past it),
+//! so this binary is empty without it.
+#![cfg(feature = "sparql")]
 
 use ikigai_core::Error;
 use ikigai_shacl::core_shacl::validate_report;

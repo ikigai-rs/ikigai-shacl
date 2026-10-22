@@ -16,9 +16,12 @@
 //! - **Constraints**: `sh:class`, `sh:datatype`, `sh:nodeKind`, `sh:minCount`, `sh:maxCount`,
 //!   `sh:in`, `sh:hasValue`, `sh:pattern` (with `sh:flags`), `sh:minLength`, `sh:maxLength`,
 //!   `sh:minInclusive`, `sh:maxInclusive`, `sh:minExclusive`, `sh:maxExclusive`.
-//! - **SHACL-SPARQL**: `sh:sparql` with `sh:select`, `sh:message`, `sh:prefixes` (through
-//!   `sh:declare`, `sh:prefix`, `sh:namespace` and `owl:imports`), `$this` pre-bound and
-//!   `$PATH` written as the shape's predicate.
+//! - **SHACL-SPARQL**, with the `sparql` feature only: `sh:sparql` with `sh:select`,
+//!   `sh:message`, `sh:prefixes` (through `sh:declare`, `sh:prefix`, `sh:namespace` and
+//!   `owl:imports`), `$this` pre-bound and `$PATH` written as the shape's predicate. Without the
+//!   feature (a build with default features off, ledger #2107), `sh:sparql` and `sh:select` are
+//!   REFUSED, naming the construct and the feature, and the prefix declarations, which change no
+//!   verdict on their own, are accepted and ignored.
 //! - **Annotations** that never change a verdict: `sh:name`, `sh:description`, `sh:order`,
 //!   `sh:group`.
 //!
@@ -38,9 +41,25 @@
 //! (bounded by [`crate::MAX_TURTLE_NESTING`] before parsing), and each `sh:select` is parsed and
 //! evaluated by oxigraph (bounded by `ikigai_store::limits` and run on a stack sized for it).
 //!
+//! # The work bound (a build without `sparql`)
+//!
+//! A build without the `sparql` feature has no ikigai-store, and so no time budget. It is bounded
+//! by WORK instead: [`MAX_VALIDATION_WORK`] units, a unit being one triple parsed, one shape
+//! compiled, one value node, focus node or class visited, one value checked against one
+//! constraint, one `sh:in` member compared, one triple a closed shape scanned or one byte of the
+//! text `sh:pattern`, `sh:minLength` or `sh:maxLength` reads (with the compiled pattern capped at
+//! [`MAX_PATTERN_SIZE`], so that a byte stands for a bounded cost). Past it the
+//! validation is refused with a typed `InvalidArgument` on `data` (or on `shapes`, while the
+//! shapes graph is still being parsed) and no report, partial or otherwise. The count is a
+//! function of the two graphs alone, so the same inputs are refused alike on every machine. The
+//! nesting bound ([`crate::MAX_TURTLE_NESTING`], ikigai-rdf's) applies in every build.
+//!
+//! With `sparql` the work is still counted and never refused: the time budget below is the
+//! bound there, as it was through 0.3.x.
+//!
 //! # SPARQL
 //!
-//! Every `sh:select` passes the guards the rudof path applies, before it is parsed or run:
+//! With the `sparql` feature, every `sh:select` passes the guards the rudof path applies, before it is parsed or run:
 //! `limits::check_sparql` (size and nesting), `budget::check_query` (the algebra), and
 //! `service::has_service` (no `SERVICE`, ledger #1099). Each is then evaluated over an
 //! in-memory store through `ikigai_store::service::evaluator()`, which refuses any service it
@@ -49,26 +68,85 @@
 //! the caller is answered with a timeout, and the evaluation is told to stop.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "sparql")]
 use std::sync::OnceLock;
 
 use ikigai_core::{Capability, Error, Representation, Result};
+#[cfg(feature = "sparql")]
 use ikigai_store::budget::{
     check_query, default_max_overdue, EvaluationBudget, TimeBudget, DEFAULT_BUDGET,
 };
-use oxigraph::io::{RdfFormat, RdfParser};
+#[cfg(feature = "sparql")]
 use oxigraph::sparql::{CancellationToken, QueryResults, Variable};
+#[cfg(feature = "sparql")]
 use oxigraph::store::Store;
 use oxrdf::vocab::{rdf, rdfs, xsd};
 use oxrdf::{
-    BlankNode, Graph, GraphNameRef, Literal, NamedNode, NamedOrBlankNode, QuadRef, Term as RdfTerm,
-    TermRef, Triple,
+    BlankNode, Graph, Literal, NamedNode, NamedOrBlankNode, Term as RdfTerm, TermRef, Triple,
 };
+#[cfg(feature = "sparql")]
+use oxrdf::{GraphNameRef, QuadRef};
+#[cfg(feature = "sparql")]
 use spargebra::Query;
 
 use crate::{naming, repr, Report, ReportResult, Term, JSON, SHAPES_ARG, TURTLE};
 
 const SH: &str = "http://www.w3.org/ns/shacl#";
+#[cfg(feature = "sparql")]
 const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
+
+/// The most WORK one validation may take in a build without the `sparql` feature, which has no
+/// time budget (see the module docs for what a unit is). Ten million units: the case in
+/// `tests/core_only.rs` that reaches it (a 50,000-member `sh:in` checked against 300 values)
+/// is refused in under half a second in a native release build and under three in a debug one
+/// (measured 2026-10-22), so no caller can hold a thread for minutes, while a validation of the
+/// size a request carries (thousands of triples, tens of shapes) uses a small fraction of it.
+pub const MAX_VALIDATION_WORK: u64 = 10_000_000;
+
+/// The largest compiled `sh:pattern` a build without `sparql` takes, in the regex crate's own
+/// measure of a compiled program (`RegexBuilder::size_limit`, whose default is ten times this).
+/// A pattern past it is refused, as one that does not compile. Applied only without `sparql`,
+/// where the time budget is not there to bound a match.
+pub const MAX_PATTERN_SIZE: usize = 1 << 20;
+
+/// The work one validation has taken so far, in the units [`MAX_VALIDATION_WORK`] counts.
+#[derive(Default)]
+struct Work {
+    used: u64,
+}
+
+impl Work {
+    /// Take `n` more units on behalf of `role` (the argument the refusal names). Refused past
+    /// [`MAX_VALIDATION_WORK`] without `sparql`; only counted with it, where the time budget is
+    /// the bound.
+    fn charge(&mut self, n: u64, role: &str) -> Result<()> {
+        self.used = self.used.saturating_add(n);
+        #[cfg(not(feature = "sparql"))]
+        if self.used > MAX_VALIDATION_WORK {
+            return Err(Error::InvalidArgument {
+                name: role.to_string(),
+                detail: format!(
+                    "validating this data against these shapes takes more than \
+                     MAX_VALIDATION_WORK ({MAX_VALIDATION_WORK}) units of work, the bound a build \
+                     without ikigai-shacl's `sparql` feature validates under in place of a time \
+                     budget. It was refused rather than answered in part: no report was produced"
+                ),
+            });
+        }
+        #[cfg(feature = "sparql")]
+        let _ = role;
+        Ok(())
+    }
+}
+
+/// The SHACL-SPARQL terms a build without the `sparql` feature refuses, as predicates, naming
+/// the feature: each would change a verdict, and that build has nothing to evaluate it with.
+#[cfg(not(feature = "sparql"))]
+const SPARQL_PREDICATES: &[&str] = &["sparql", "select"];
+
+/// The SHACL-SPARQL class a build without `sparql` refuses, as the object of `rdf:type`.
+#[cfg(not(feature = "sparql"))]
+const SPARQL_CLASSES: &[&str] = &["SPARQLConstraint"];
 
 /// The SHACL predicates this validator implements, by local name. Anything else in the SHACL
 /// namespace used as a predicate is refused by name ([`check_vocabulary`]).
@@ -177,6 +255,18 @@ fn unsupported(what: &str) -> Error {
     ))
 }
 
+/// The refusal for a SHACL-SPARQL term in a build without the `sparql` feature.
+#[cfg(not(feature = "sparql"))]
+fn needs_sparql(what: &str) -> Error {
+    refuse(format!(
+        "the shapes graph uses {what}, a SHACL-SPARQL construct, and this build of ikigai-shacl \
+         has no SPARQL engine: it was built without its `sparql` feature (enable `sparql`, or \
+         `rudof`, to validate it). It refuses a shapes graph it cannot apply in full rather than \
+         skip a constraint, which would make data look conforming when it is not; nothing was \
+         validated"
+    ))
+}
+
 // ---------------------------------------------------------------------------------------------
 // The compiled shapes graph.
 // ---------------------------------------------------------------------------------------------
@@ -189,8 +279,10 @@ struct Compiled {
     /// The shapes with at least one target, in a deterministic order.
     roots: Vec<ShapeId>,
     /// Whether any shape carries a `sh:sparql` constraint (only then is a store built).
+    #[cfg(feature = "sparql")]
     has_sparql: bool,
     /// The longest query text, which sizes the stack validation runs on.
+    #[cfg(feature = "sparql")]
     longest_query: String,
 }
 
@@ -243,12 +335,14 @@ enum Constraint {
     MaxLength(u64),
     Range(Range, Literal),
     Node(ShapeId),
+    #[cfg(feature = "sparql")]
     Sparql(Box<SparqlConstraint>),
     /// `sh:closed true`: the predicates a value node may have, which are the paths of the
     /// shape's own `sh:property` shapes and its `sh:ignoredProperties`.
     Closed(HashSet<NamedNode>),
 }
 
+#[cfg(feature = "sparql")]
 struct SparqlConstraint {
     query: Query,
     messages: Vec<Literal>,
@@ -273,6 +367,7 @@ impl Constraint {
             Constraint::Range(Range::MinExclusive, _) => "MinExclusiveConstraintComponent",
             Constraint::Range(Range::MaxExclusive, _) => "MaxExclusiveConstraintComponent",
             Constraint::Node(_) => "NodeConstraintComponent",
+            #[cfg(feature = "sparql")]
             Constraint::Sparql(_) => "SPARQLConstraintComponent",
             Constraint::Closed(_) => "ClosedConstraintComponent",
         }
@@ -280,14 +375,16 @@ impl Constraint {
 }
 
 /// Parse caller Turtle strictly, refusing first any triple-term nesting past
-/// [`crate::MAX_TURTLE_NESTING`]. `role` is the argument the text arrived in, and names the
-/// graph's blank nodes (see [`naming::by_appearance`]).
-fn parse_turtle(ttl: &str, role: &str) -> Result<Vec<Triple>> {
+/// [`crate::MAX_TURTLE_NESTING`], and charging one unit of `work` per triple. `role` is the
+/// argument the text arrived in, and names the graph's blank nodes (see
+/// [`naming::by_appearance`]).
+fn parse_turtle(ttl: &str, role: &str, work: &mut Work) -> Result<Vec<Triple>> {
     crate::depth::check_turtle_nesting(ttl, role)?;
-    let triples = RdfParser::from_format(RdfFormat::Turtle)
+    let triples = oxttl::TurtleParser::new()
         .for_slice(ttl.as_bytes())
-        .map(|quad| {
-            quad.map(Triple::from).map_err(|e| {
+        .map(|triple| {
+            work.charge(1, role)?;
+            triple.map_err(|e| {
                 Error::Endpoint(format!("urn:shacl:validate: {role} graph parse error: {e}"))
             })
         })
@@ -333,23 +430,41 @@ fn shown(node: &NamedOrBlankNode) -> String {
     node.to_string()
 }
 
+/// The SHACL local name of `t`'s predicate, and of its object when `t` is an `rdf:type` of a
+/// SHACL class.
+fn sh_terms(t: &Triple) -> (Option<&str>, Option<&str>) {
+    let predicate = t.predicate.as_str().strip_prefix(SH);
+    let class = match &t.object {
+        RdfTerm::NamedNode(class) if t.predicate.as_ref() == rdf::TYPE => {
+            class.as_str().strip_prefix(SH)
+        }
+        _ => None,
+    };
+    (predicate, class)
+}
+
 /// Refuse any term of the SHACL namespace this validator does not implement, used as a
-/// predicate or as the class of an `rdf:type`.
+/// predicate or as the class of an `rdf:type`. Two passes: a term no build implements is named
+/// first, so its refusal never tells a caller to enable a feature that would not help; then,
+/// without `sparql`, the SHACL-SPARQL terms that feature implements.
 fn check_vocabulary(triples: &[Triple]) -> Result<()> {
     for t in triples {
-        if let Some(local) = t.predicate.as_str().strip_prefix(SH) {
-            if !SUPPORTED_PREDICATES.contains(&local) {
-                return Err(unsupported(&format!("`sh:{local}`")));
-            }
+        let (predicate, class) = sh_terms(t);
+        if let Some(local) = predicate.filter(|l| !SUPPORTED_PREDICATES.contains(l)) {
+            return Err(unsupported(&format!("`sh:{local}`")));
         }
-        if t.predicate.as_ref() == rdf::TYPE {
-            if let RdfTerm::NamedNode(class) = &t.object {
-                if let Some(local) = class.as_str().strip_prefix(SH) {
-                    if !SUPPORTED_CLASSES.contains(&local) {
-                        return Err(unsupported(&format!("the class `sh:{local}`")));
-                    }
-                }
-            }
+        if let Some(local) = class.filter(|l| !SUPPORTED_CLASSES.contains(l)) {
+            return Err(unsupported(&format!("the class `sh:{local}`")));
+        }
+    }
+    #[cfg(not(feature = "sparql"))]
+    for t in triples {
+        let (predicate, class) = sh_terms(t);
+        if let Some(local) = predicate.filter(|l| SPARQL_PREDICATES.contains(l)) {
+            return Err(needs_sparql(&format!("`sh:{local}`")));
+        }
+        if let Some(local) = class.filter(|l| SPARQL_CLASSES.contains(l)) {
+            return Err(needs_sparql(&format!("the class `sh:{local}`")));
         }
     }
     Ok(())
@@ -420,9 +535,10 @@ fn count(literal: &Literal, local: &str) -> Result<u64> {
     })
 }
 
-/// Compile the shapes graph, refusing anything outside the subset.
-fn compile(shapes_ttl: &str) -> Result<Compiled> {
-    let triples = parse_turtle(shapes_ttl, SHAPES_ARG)?;
+/// Compile the shapes graph, refusing anything outside the subset, and charging `work` for the
+/// triples parsed and one unit per shape.
+fn compile(shapes_ttl: &str, work: &mut Work) -> Result<Compiled> {
+    let triples = parse_turtle(shapes_ttl, SHAPES_ARG, work)?;
     check_vocabulary(&triples)?;
     let graph = graph_of(&triples);
 
@@ -462,8 +578,11 @@ fn compile(shapes_ttl: &str) -> Result<Compiled> {
         .map(|(i, n)| (n.clone(), i))
         .collect();
 
+    work.charge(nodes.len() as u64, SHAPES_ARG)?;
     let mut shapes = Vec::with_capacity(nodes.len());
+    #[cfg(feature = "sparql")]
     let mut has_sparql = false;
+    #[cfg(feature = "sparql")]
     let mut longest_query = String::new();
     for node in &nodes {
         let objects = |local: &str| -> Vec<RdfTerm> {
@@ -661,6 +780,8 @@ fn compile(shapes_ttl: &str) -> Result<Compiled> {
             }
             constraints.push(Constraint::Closed(allowed));
         }
+        // Without `sparql`, `check_vocabulary` has already refused every `sh:sparql`.
+        #[cfg(feature = "sparql")]
         for t in objects("sparql") {
             let constraint = sparql_constraint(&graph, &t, path.as_ref())?;
             has_sparql = true;
@@ -702,7 +823,9 @@ fn compile(shapes_ttl: &str) -> Result<Compiled> {
     Ok(Compiled {
         shapes,
         roots,
+        #[cfg(feature = "sparql")]
         has_sparql,
+        #[cfg(feature = "sparql")]
         longest_query,
     })
 }
@@ -736,6 +859,10 @@ fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
     if literal {
         builder = regex::RegexBuilder::new(&regex::escape(source));
     }
+    // Without `sparql` the work bound charges a match by the length of the text it reads, which
+    // stands for its cost only while the compiled pattern is small: so it is capped too.
+    #[cfg(not(feature = "sparql"))]
+    builder.size_limit(MAX_PATTERN_SIZE);
     builder
         .build()
         .map_err(|e| refuse(format!("`sh:pattern` {source:?} does not compile: {e}")))
@@ -744,6 +871,7 @@ fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
 /// Compile one `sh:sparql` constraint: its `sh:select` with `$PATH` written as the shape's
 /// predicate, parsed with its declared prefixes, and every guard applied. Returns the
 /// constraint and the query text (which sizes the stack it runs on).
+#[cfg(feature = "sparql")]
 fn sparql_constraint(
     graph: &Graph,
     term: &RdfTerm,
@@ -827,6 +955,7 @@ fn sparql_constraint(
 
 /// The prefix declarations a `sh:sparql` constraint's `sh:prefixes` reach: each value's
 /// `sh:declare`, and those of everything it reaches through `owl:imports`, walked iteratively.
+#[cfg(feature = "sparql")]
 fn prefixes(graph: &Graph, constraint: &NamedOrBlankNode) -> Result<Vec<(String, String)>> {
     let imports = NamedNode::new_unchecked(OWL_IMPORTS);
     let mut out = Vec::new();
@@ -937,6 +1066,7 @@ fn default_message(constraint: &Constraint) -> String {
         Constraint::MaxLength(n) => format!("MaxLength({n}) not satisfied"),
         Constraint::Range(_, l) => format!("Range constraint not satisfied for {l}"),
         Constraint::Node(_) => "Node constraint not satisfied".to_string(),
+        #[cfg(feature = "sparql")]
         Constraint::Sparql(_) => String::new(),
         Constraint::Closed(_) => "Closed constraint not satisfied".to_string(),
     }
@@ -973,8 +1103,12 @@ fn message_like(template: &Literal, text: String) -> Literal {
 struct Run<'a> {
     compiled: &'a Compiled,
     data: Graph,
+    #[cfg(feature = "sparql")]
     store: Option<Store>,
+    #[cfg(feature = "sparql")]
     token: CancellationToken,
+    /// The work taken so far, data parse included.
+    work: Work,
     /// Each class's subclasses (itself included), computed once.
     subclasses: HashMap<NamedNode, HashSet<RdfTerm>>,
     /// Whether a node conforms to a shape, for `sh:node`: filled bottom-up by [`Run::prepare`].
@@ -982,6 +1116,8 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
+    /// Past the time budget (with `sparql`), the evaluation is told to stop here.
+    #[cfg(feature = "sparql")]
     fn canceled(&self) -> Result<()> {
         if self.token.is_cancelled() {
             return Err(Error::Endpoint(
@@ -991,10 +1127,21 @@ impl Run<'_> {
         Ok(())
     }
 
+    /// Without `sparql` there is no time budget to stop at: the work bound is the one bound.
+    #[cfg(not(feature = "sparql"))]
+    fn canceled(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Take `n` units of work for the data graph.
+    fn charge(&mut self, n: usize) -> Result<()> {
+        self.work.charge(n as u64, "data")
+    }
+
     /// The value nodes of `shape` at `focus`: the focus itself for a node shape, its values
-    /// along the predicate for a property shape.
-    fn values(&self, focus: &RdfTerm, shape: &Shape) -> Vec<RdfTerm> {
-        match &shape.path {
+    /// along the predicate for a property shape. One unit of work each, and one for the walk.
+    fn values(&mut self, focus: &RdfTerm, shape: &Shape) -> Result<Vec<RdfTerm>> {
+        let values: Vec<RdfTerm> = match &shape.path {
             None => vec![focus.clone()],
             Some(p) => match as_node(focus.as_ref()) {
                 Some(node) => self
@@ -1004,15 +1151,19 @@ impl Run<'_> {
                     .collect(),
                 None => Vec::new(),
             },
-        }
+        };
+        self.charge(values.len() + 1)?;
+        Ok(values)
     }
 
-    /// `class` and every class below it through `rdfs:subClassOf`, walked iteratively.
-    fn subclasses(&mut self, class: &NamedNode) -> &HashSet<RdfTerm> {
+    /// `class` and every class below it through `rdfs:subClassOf`, walked iteratively, one unit
+    /// of work per class visited.
+    fn subclasses(&mut self, class: &NamedNode) -> Result<&HashSet<RdfTerm>> {
         if !self.subclasses.contains_key(class) {
             let mut seen: HashSet<RdfTerm> = HashSet::new();
             let mut todo = vec![RdfTerm::NamedNode(class.clone())];
             while let Some(c) = todo.pop() {
+                self.work.charge(1, "data")?;
                 if !seen.insert(c.clone()) {
                     continue;
                 }
@@ -1024,25 +1175,28 @@ impl Run<'_> {
             }
             self.subclasses.insert(class.clone(), seen);
         }
-        &self.subclasses[class]
+        Ok(&self.subclasses[class])
     }
 
-    /// Is `node` a SHACL instance of `class` (`rdf:type/rdfs:subClassOf*`)?
-    fn is_instance(&mut self, node: &RdfTerm, class: &NamedNode) -> bool {
+    /// Is `node` a SHACL instance of `class` (`rdf:type/rdfs:subClassOf*`)? One unit of work
+    /// per type it has.
+    fn is_instance(&mut self, node: &RdfTerm, class: &NamedNode) -> Result<bool> {
         let Some(subject) = as_node(node.as_ref()) else {
-            return false;
+            return Ok(false);
         };
         let types: Vec<RdfTerm> = self
             .data
             .objects_for_subject_predicate(&subject, rdf::TYPE)
             .map(TermRef::into_owned)
             .collect();
-        let below = self.subclasses(class);
-        types.iter().any(|t| below.contains(t))
+        self.charge(types.len())?;
+        let below = self.subclasses(class)?;
+        Ok(types.iter().any(|t| below.contains(t)))
     }
 
-    /// The focus nodes of a shape's targets, deduplicated, in a deterministic order.
-    fn focus_nodes(&mut self, shape: ShapeId) -> Vec<RdfTerm> {
+    /// The focus nodes of a shape's targets, deduplicated, in a deterministic order. One unit
+    /// of work per node a target finds.
+    fn focus_nodes(&mut self, shape: ShapeId) -> Result<Vec<RdfTerm>> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let compiled = self.compiled;
@@ -1050,7 +1204,7 @@ impl Run<'_> {
             let found: Vec<RdfTerm> = match target {
                 Target::Node(n) => vec![n.clone()],
                 Target::Class(c) => {
-                    let classes: Vec<RdfTerm> = self.subclasses(c).iter().cloned().collect();
+                    let classes: Vec<RdfTerm> = self.subclasses(c)?.iter().cloned().collect();
                     classes
                         .iter()
                         .flat_map(|cls| {
@@ -1071,6 +1225,7 @@ impl Run<'_> {
                     .map(|t| t.object.into_owned())
                     .collect(),
             };
+            self.charge(found.len())?;
             let mut found = found;
             found.sort_by_key(|t| t.to_string());
             for f in found {
@@ -1079,17 +1234,22 @@ impl Run<'_> {
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     /// The `(node, shape)` pairs a validation of `shape` at `focus` asks `sh:node` about,
     /// through its property shapes (an explicit work list, not a recursion).
-    fn node_questions(&self, focus: &RdfTerm, shape: ShapeId) -> Vec<(RdfTerm, ShapeId)> {
+    fn node_questions(
+        &mut self,
+        focus: &RdfTerm,
+        shape: ShapeId,
+    ) -> Result<Vec<(RdfTerm, ShapeId)>> {
+        let compiled = self.compiled;
         let mut out = Vec::new();
         let mut todo = vec![(focus.clone(), shape)];
         while let Some((v, x)) = todo.pop() {
-            let s = &self.compiled.shapes[x];
-            let values = self.values(&v, s);
+            let s = &compiled.shapes[x];
+            let values = self.values(&v, s)?;
             for c in &s.constraints {
                 if let Constraint::Node(t) = c {
                     out.extend(values.iter().map(|w| (w.clone(), *t)));
@@ -1099,7 +1259,7 @@ impl Run<'_> {
                 todo.extend(values.iter().map(|w| (w.clone(), p)));
             }
         }
-        out
+        Ok(out)
     }
 
     /// Answer every `sh:node` question a validation of `shape` at `focus` will ask, bottom-up
@@ -1108,11 +1268,12 @@ impl Run<'_> {
     /// question it asks is already answered.
     fn prepare(&mut self, focus: &RdfTerm, shape: ShapeId) -> Result<()> {
         let mut stack: Vec<(RdfTerm, ShapeId, bool)> = self
-            .node_questions(focus, shape)
+            .node_questions(focus, shape)?
             .into_iter()
             .map(|(v, s)| (v, s, false))
             .collect();
         while let Some((v, s, expanded)) = stack.pop() {
+            self.charge(1)?;
             if self.conforms.contains_key(&(v.clone(), s)) {
                 continue;
             }
@@ -1122,7 +1283,7 @@ impl Run<'_> {
                 self.evaluate(&v, s, &mut results)?;
                 self.conforms.insert((v, s), results.is_empty());
             } else {
-                let questions = self.node_questions(&v, s);
+                let questions = self.node_questions(&v, s)?;
                 stack.push((v, s, true));
                 stack.extend(
                     questions
@@ -1143,7 +1304,7 @@ impl Run<'_> {
         let mut todo = vec![(focus.clone(), shape)];
         while let Some((v, x)) = todo.pop() {
             let s = &compiled.shapes[x];
-            let values = self.values(&v, s);
+            let values = self.values(&v, s)?;
             for c in &s.constraints {
                 self.apply(c, s, &v, &values, out)?;
             }
@@ -1181,6 +1342,7 @@ impl Run<'_> {
                     failed.push((None, shape.path.clone()));
                 }
             }
+            #[cfg(feature = "sparql")]
             Constraint::Sparql(q) => return self.sparql(q, shape, focus, out),
             // One result per triple whose predicate is not allowed, with that predicate as the
             // result path and its object as the value (SHACL §4.8.1, and rudof's report).
@@ -1189,12 +1351,15 @@ impl Run<'_> {
                     let Some(node) = as_node(w.as_ref()) else {
                         continue;
                     };
+                    let mut scanned = 0;
                     for t in self.data.triples_for_subject(&node) {
+                        scanned += 1;
                         let predicate = t.predicate.into_owned();
                         if !allowed.contains(&predicate) {
                             failed.push((Some(t.object.into_owned()), Some(predicate)));
                         }
                     }
+                    self.charge(scanned)?;
                 }
             }
             _ => {
@@ -1232,11 +1397,14 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// Whether value node `w` satisfies the per-value constraint `c`.
+    /// Whether value node `w` satisfies the per-value constraint `c`. One unit of work, one more
+    /// per `sh:in` member compared, and one per byte of the text `sh:pattern`, `sh:minLength` or
+    /// `sh:maxLength` reads.
     fn holds(&mut self, c: &Constraint, w: &RdfTerm) -> Result<bool> {
+        self.charge(1)?;
         Ok(match c {
             Constraint::Class(class) => {
-                !matches!(w, RdfTerm::Literal(_)) && self.is_instance(w, class)
+                !matches!(w, RdfTerm::Literal(_)) && self.is_instance(w, class)?
             }
             Constraint::Datatype(d) => match w {
                 RdfTerm::Literal(l) => l.datatype() == d.as_ref() && well_formed(l),
@@ -1253,17 +1421,31 @@ impl Run<'_> {
                     NodeKind::IriOrLiteral => iri || literal,
                 }
             }
-            Constraint::In(members) => members.contains(w),
+            Constraint::In(members) => {
+                self.charge(members.len())?;
+                members.contains(w)
+            }
             Constraint::Pattern(re) => match string_of(w) {
-                Some(s) => re.is_match(&s),
+                Some(s) => {
+                    self.charge(s.len())?;
+                    re.is_match(&s)
+                }
                 None => false,
             },
-            Constraint::MinLength(n) => {
-                string_of(w).is_some_and(|s| s.chars().count() as u64 >= *n)
-            }
-            Constraint::MaxLength(n) => {
-                string_of(w).is_some_and(|s| s.chars().count() as u64 <= *n)
-            }
+            Constraint::MinLength(n) => match string_of(w) {
+                Some(s) => {
+                    self.charge(s.len())?;
+                    s.chars().count() as u64 >= *n
+                }
+                None => false,
+            },
+            Constraint::MaxLength(n) => match string_of(w) {
+                Some(s) => {
+                    self.charge(s.len())?;
+                    s.chars().count() as u64 <= *n
+                }
+                None => false,
+            },
             Constraint::Range(range, bound) => match w {
                 RdfTerm::Literal(l) => match compare(l, bound) {
                     Some(order) => match range {
@@ -1286,8 +1468,9 @@ impl Run<'_> {
             Constraint::MinCount(_)
             | Constraint::MaxCount(_)
             | Constraint::HasValue(_)
-            | Constraint::Sparql(_)
             | Constraint::Closed(_) => true,
+            #[cfg(feature = "sparql")]
+            Constraint::Sparql(_) => true,
         })
     }
 
@@ -1296,6 +1479,7 @@ impl Run<'_> {
     /// shape's path) the result path, `?value` (else the focus) the value, and `?message` or the
     /// constraint's `sh:message`, with every `{?var}` resolved from the solution, the message.
     /// A solution binding `?failure` to true is a failure of the validation itself.
+    #[cfg(feature = "sparql")]
     fn sparql(
         &mut self,
         q: &SparqlConstraint,
@@ -1509,6 +1693,7 @@ fn compare(a: &Literal, b: &Literal) -> Option<std::cmp::Ordering> {
 /// ceiling for root. The overdue cap is this crate's own: [`MAX_OVERDUE_FLOOR`] (ledger
 /// #1510), and so are the reserve and the caller share (ledger #1002), see
 /// [`caller_share`].
+#[cfg(feature = "sparql")]
 pub(crate) fn budget() -> &'static EvaluationBudget {
     static BUDGET: OnceLock<EvaluationBudget> = OnceLock::new();
     BUDGET.get_or_init(|| {
@@ -1542,6 +1727,7 @@ pub(crate) fn budget() -> &'static EvaluationBudget {
 /// needs to keep answering through one runaway, and `tests/rudof_time_budget.rs` pins that a
 /// caller may fill the cap and only the one past it is refused. A smaller share per principal
 /// (so that one caller's runaways cannot crowd out another's) is a new policy, not this fix.
+#[cfg(feature = "sparql")]
 fn caller_share() -> usize {
     max_overdue()
 }
@@ -1573,9 +1759,11 @@ fn caller_share() -> usize {
 /// or two-core host two runaways can hold every core, where the store's default held one.
 /// Above 8 cores the store's own default is already at least 2, and it is kept, so a large
 /// host is unchanged.
+#[cfg(feature = "sparql")]
 const MAX_OVERDUE_FLOOR: usize = 2;
 
 /// [`MAX_OVERDUE_FLOOR`], or the store's default when that is larger.
+#[cfg(feature = "sparql")]
 fn max_overdue() -> usize {
     default_max_overdue().max(MAX_OVERDUE_FLOOR)
 }
@@ -1583,12 +1771,14 @@ fn max_overdue() -> usize {
 /// Validate: compile the shapes (iteratively, on the caller's thread, each `sh:select` parsed
 /// on a thread sized for it), then validate the data inside the time budget, on a thread sized
 /// for the longest query, and return the results.
+#[cfg(feature = "sparql")]
 fn run(data_ttl: &str, shapes_ttl: &str, capability: &Capability) -> Result<(bool, Vec<Res>)> {
-    let compiled = compile(shapes_ttl)?;
+    let mut work = Work::default();
+    let compiled = compile(shapes_ttl, &mut work)?;
     let longest = compiled.longest_query.clone();
     let data_ttl = data_ttl.to_string();
     budget().run(&longest, capability, None, move |token| {
-        let triples = parse_turtle(&data_ttl, "data")?;
+        let triples = parse_turtle(&data_ttl, "data", &mut work)?;
         let store = if compiled.has_sparql {
             let store = Store::new().map_err(|e| {
                 Error::Endpoint(format!("urn:shacl:validate: could not open a store: {e}"))
@@ -1607,24 +1797,48 @@ fn run(data_ttl: &str, shapes_ttl: &str, capability: &Capability) -> Result<(boo
         } else {
             None
         };
-        let mut run = Run {
+        let run = Run {
             compiled: &compiled,
             data: graph_of(&triples),
             store,
             token: token.clone(),
+            work,
             subclasses: HashMap::new(),
             conforms: HashMap::new(),
         };
-        let mut results = Vec::new();
-        for &root in &compiled.roots {
-            for focus in run.focus_nodes(root) {
-                run.canceled()?;
-                run.prepare(&focus, root)?;
-                run.evaluate(&focus, root, &mut results)?;
-            }
-        }
-        Ok((results.is_empty(), results))
+        validate_all(run)
     })
+}
+
+/// Validate without `sparql`: on the caller's thread (nothing here recurses), within
+/// [`MAX_VALIDATION_WORK`] rather than a time budget, so `capability` decides nothing.
+#[cfg(not(feature = "sparql"))]
+fn run(data_ttl: &str, shapes_ttl: &str, _capability: &Capability) -> Result<(bool, Vec<Res>)> {
+    let mut work = Work::default();
+    let compiled = compile(shapes_ttl, &mut work)?;
+    let triples = parse_turtle(data_ttl, "data", &mut work)?;
+    let run = Run {
+        compiled: &compiled,
+        data: graph_of(&triples),
+        work,
+        subclasses: HashMap::new(),
+        conforms: HashMap::new(),
+    };
+    validate_all(run)
+}
+
+/// Every focus node of every shape with a target, in a deterministic order.
+fn validate_all(mut run: Run<'_>) -> Result<(bool, Vec<Res>)> {
+    let compiled = run.compiled;
+    let mut results = Vec::new();
+    for &root in &compiled.roots {
+        for focus in run.focus_nodes(root)? {
+            run.canceled()?;
+            run.prepare(&focus, root)?;
+            run.evaluate(&focus, root, &mut results)?;
+        }
+    }
+    Ok((results.is_empty(), results))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1754,7 +1968,8 @@ pub(crate) fn library_capability() -> Capability {
 
 /// Validate `data_ttl` against `shapes_ttl` with the subset validator, returning the full
 /// [`Report`] (the `application/json` face) — the same shape, field for field, as the rudof
-/// path's. Runs within the base time budget.
+/// path's. With the `sparql` feature it runs within the base time budget; without it, within
+/// [`MAX_VALIDATION_WORK`].
 pub fn validate_report(data_ttl: &str, shapes_ttl: &str) -> Result<Report> {
     let (conforms, results) = run(data_ttl, shapes_ttl, &library_capability())?;
     Ok(report(conforms, &results))
@@ -1768,7 +1983,7 @@ pub fn validate_turtle(data_ttl: &str, shapes_ttl: &str) -> Result<String> {
 }
 
 /// The endpoint's rendering, for a build without rudof: `capability` is the caller's, and
-/// decides the time budget.
+/// decides the time budget (with `sparql`; without it, the work bound applies to every caller).
 // With rudof compiled the endpoint uses rudof, so this is reached only from a build without it.
 #[cfg_attr(feature = "rudof", allow(dead_code))]
 pub(crate) fn validate(

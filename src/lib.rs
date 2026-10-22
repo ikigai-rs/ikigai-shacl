@@ -23,7 +23,12 @@
 //! - **[`core_shacl`]**, always compiled: a subset validator with no rudof, no network stack and
 //!   no recursion over either graph, for a host that turns `rudof` off. It covers what
 //!   `ikigai_vocab::SHAPES` uses and a few cheap neighbors, and REFUSES, by name, every SHACL
-//!   term outside that subset rather than skip a constraint it does not understand.
+//!   term outside that subset rather than skip a constraint it does not understand. Its
+//!   `sh:sparql` / `sh:select` constraints come with the **`sparql`** feature (which `rudof`
+//!   implies), and with it oxigraph's store and ikigai-store's guards and time budget. With
+//!   default features off it is the CORE constraints alone, on oxrdf and oxttl (ledger #2107):
+//!   small enough for an in-page wasm kernel, bounded by work rather than time
+//!   ([`core_shacl::MAX_VALIDATION_WORK`]), and refusing a SHACL-SPARQL construct by name.
 //!
 //! With both compiled the endpoint uses rudof; `tests/differential.rs` runs both over one corpus
 //! and requires the same verdicts. The `module` feature (a lazy-loadable WASM module) implies
@@ -313,9 +318,11 @@ impl Report {
 }
 
 /// Validate `data_ttl` against `shapes_ttl`, returning the full [`Report`] — what the
-/// `application/json` face serializes. rudof with the `rudof` feature, else [`core_shacl`];
-/// either way within the base time budget (5 s), past which it is refused with a typed
-/// `Error::Timeout` (a library call carries no capability to grant more).
+/// `application/json` face serializes. rudof with the `rudof` feature, else [`core_shacl`].
+/// With `sparql` (which `rudof` implies), within the base time budget (5 s), past which it is
+/// refused with a typed `Error::Timeout` (a library call carries no capability to grant more);
+/// without it, within [`core_shacl::MAX_VALIDATION_WORK`], past which it is refused with a typed
+/// `Error::InvalidArgument`.
 pub fn validate_report(data_ttl: &str, shapes_ttl: &str) -> Result<Report> {
     #[cfg(feature = "rudof")]
     {
@@ -335,7 +342,7 @@ pub fn validate_outcome(data_ttl: &str, shapes_ttl: &str) -> Result<ValidationOu
 
 /// Validate `data_ttl` against `shapes_ttl`, returning the report graph as Turtle — what the
 /// default `text/turtle` face serves. rudof with the `rudof` feature, else [`core_shacl`];
-/// within the base time budget, like [`validate_report`].
+/// within the same bound as [`validate_report`].
 pub fn validate_turtle(data_ttl: &str, shapes_ttl: &str) -> Result<String> {
     #[cfg(feature = "rudof")]
     {
@@ -591,6 +598,7 @@ mod tests {
     const KNOWS_DATA: &str = r#"@prefix : <http://example.org/> .
 :bob a :Person ; :knows :bob ."#;
 
+    #[cfg(feature = "sparql")]
     #[test]
     fn sparql_node_constraint_resolves_the_message_and_carries_the_value() {
         let report = validate_report(KNOWS_DATA, KNOWS_SHAPES).unwrap();
@@ -619,6 +627,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sparql")]
     #[test]
     fn sparql_constraint_that_binds_path_fills_path() {
         let shapes = KNOWS_SHAPES.replace(
@@ -634,6 +643,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sparql")]
     #[test]
     fn sparql_constraint_without_a_message_reports_null_message() {
         let shapes =
@@ -641,6 +651,21 @@ mod tests {
         let report = validate_report(KNOWS_DATA, &shapes).unwrap();
         assert_eq!(report.violations.len(), 1, "{report:?}");
         assert_eq!(report.violations[0].message, None);
+    }
+
+    /// Without `sparql`, the same shapes are refused, naming the construct and the feature that
+    /// would validate them, never answered as if the constraint were not there.
+    #[cfg(not(feature = "sparql"))]
+    #[test]
+    fn without_sparql_a_sparql_constraint_is_refused_naming_the_feature() {
+        match validate_report(KNOWS_DATA, KNOWS_SHAPES) {
+            Err(Error::InvalidArgument { name, detail }) => {
+                assert_eq!(name, "shapes");
+                assert!(detail.contains("`sh:sparql`"), "{detail}");
+                assert!(detail.contains("`sparql` feature"), "{detail}");
+            }
+            other => panic!("not refused: {other:?}"),
+        }
     }
 
     #[test]
@@ -666,6 +691,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sparql")]
     #[test]
     fn json_keeps_the_signature_keys_first_and_in_order() {
         let body = json(KNOWS_DATA, KNOWS_SHAPES);
