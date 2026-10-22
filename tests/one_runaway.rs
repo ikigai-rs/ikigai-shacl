@@ -14,6 +14,10 @@
 //!
 //! ⚠ On a host with eight or more cores the store's default was already at least two, so this
 //! test passes there either way: it is CI's four-core runner that tells the two apart.
+//!
+//! Only a build with the `sparql` feature has a time budget (and a `sh:select` to run past it),
+//! so this binary is empty without it.
+#![cfg(feature = "sparql")]
 
 use ikigai_core::Error;
 use ikigai_shacl::core_shacl::validate_report;

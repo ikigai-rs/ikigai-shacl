@@ -174,14 +174,20 @@ exactly the quiet repos that need it. devtools is the one repo that is never ina
 
 ## Two validators: rudof, or a subset with no network stack
 
-`urn:shacl:validate` has two implementations in this crate, chosen by one feature
-(ledger #1176):
+`urn:shacl:validate` has two implementations in this crate, chosen by features
+(ledger #1176, #2107). Each build is a superset of the one above it:
 
 | build | validator | what it gives you |
 | --- | --- | --- |
-| default (`rudof` on) | rudof's `shacl` crate | all of SHACL Core and SHACL-SPARQL's `sh:select`, behind the bounds below |
-| `default-features = false` | `core_shacl`, the subset validator | the subset below, with no rudof, no network stack, and no recursion over either graph |
+| `default-features = false` | `core_shacl`, the subset validator, CORE constraints only | the subset below without SHACL-SPARQL, on oxrdf and oxttl alone: no SPARQL engine, no store, no rudof, no network stack, bounded by work instead of time. `sh:sparql` and `sh:select` are refused, naming the `sparql` feature |
+| `default-features = false, features = ["sparql"]` | `core_shacl`, the subset validator | the whole subset below, its `sh:select` constraints evaluated over oxigraph's in-memory store under ikigai-store's guards and time budget. This is what `default-features = false` gave through 0.3.x |
+| default (`rudof` on, which implies `sparql`) | rudof's `shacl` crate | all of SHACL Core and SHACL-SPARQL's `sh:select`, behind the bounds below |
 | `module` | rudof | the lazy-loadable WASM module, unchanged (`module` implies `rudof`) |
+
+⚠ **Moving from 0.3.x with `default-features = false`**: add `features = ["sparql"]` to keep what
+you had, or keep the core-only build if no shapes graph you validate uses `sh:sparql`. A shapes
+graph that does is refused by name in the core-only build, never validated as if the constraint
+were not there.
 
 With both compiled (the default build), the endpoint uses rudof, so no consumer's behavior
 changes. `ikigai_shacl::validate_report`, `validate_outcome` and `validate_turtle` use the same
@@ -196,6 +202,20 @@ below refuse those inputs). A host that only validates shapes it ships, such as 
 checking a plan against `ikigai_vocab::SHAPES`, links the subset instead: the reduced build is
 87 packages against the default's 246, nothing beyond what `ikigai-store` alone links with
 default features off, with no reqwest, no tokio, no rudof and no `http-client` anywhere.
+
+**Why the core-only build exists** (ledger #2107). Most of the subset's weight was its SPARQL:
+oxigraph's store, spareval, spargebra and ikigai-store. A page that runs the kernel in the
+browser and only checks closed shapes paid for all of it. Measured 2026-10-22 as a minimal
+wasm32 cdylib over `space()` and `validate_turtle` (release, LTO, one codegen unit, no
+wasm-opt), the size it adds to a kernel that links ikigai-core alone:
+
+| build | raw | gzip -9 |
+| --- | --- | --- |
+| `default-features = false` at 0.3.7 (the subset with SPARQL) | 4.96 MB | 1.36 MB |
+| `default-features = false` now (core only) | 1.41 MB | 0.44 MB |
+
+About half of what is left is the `regex` crate behind `sh:pattern`, taken with its `perf-*`
+features off (they were another 0.45 MB; matching stays linear time).
 
 **The subset**, which covers every construct in `ikigai_vocab::SHAPES` and a few cheap
 neighbors:
@@ -215,9 +235,12 @@ neighbors:
   date, time and duration types), `sh:nodeKind`, `sh:minCount`, `sh:maxCount`, `sh:in`,
   `sh:hasValue`, `sh:pattern` with `sh:flags`, `sh:minLength`, `sh:maxLength`,
   `sh:minInclusive`, `sh:maxInclusive`, `sh:minExclusive`, `sh:maxExclusive`;
-- SHACL-SPARQL: `sh:sparql` with `sh:select`, `sh:message`, and `sh:prefixes` (through
-  `sh:declare`, `sh:prefix`, `sh:namespace` and `owl:imports`); `$this` is pre-bound by
-  substitution, never written into the query text, and `$PATH` is the shape's predicate;
+- SHACL-SPARQL, with the `sparql` feature: `sh:sparql` with `sh:select`, `sh:message`, and
+  `sh:prefixes` (through `sh:declare`, `sh:prefix`, `sh:namespace` and `owl:imports`); `$this`
+  is pre-bound by substitution, never written into the query text, and `$PATH` is the shape's
+  predicate. Without the feature, `sh:sparql`, `sh:select` and the class `sh:SPARQLConstraint`
+  are refused, naming the feature, and prefix declarations alone, which change no verdict, are
+  accepted;
 - the non-validating annotations `sh:name`, `sh:description`, `sh:order` and `sh:group`.
 
 **It refuses everything else, by name.** Any other term of the SHACL namespace, as a predicate
@@ -242,6 +265,17 @@ evaluated through `ikigai_store::service::evaluator()`, which refuses every serv
 validation runs inside an `ikigai_store::budget::EvaluationBudget`: the store's 5 s base for an
 ordinary caller (more by a `urn:cap:store:budget:<ms>` grant, the 120 s ceiling for root), past
 which the caller is answered with a typed timeout and the evaluation is told to stop.
+
+**Without `sparql` the bound is work, not time.** The core-only build has no ikigai-store, so it
+counts work instead: one unit per triple parsed, shape compiled, value node, focus node or class
+visited, value checked against a constraint, `sh:in` member compared, triple a closed shape
+scanned, and byte of text `sh:pattern`, `sh:minLength` or `sh:maxLength` reads. Past
+`core_shacl::MAX_VALIDATION_WORK` (10,000,000) the validation is a typed `InvalidArgument` on
+`data` and no report. The case in `tests/core_only.rs` that reaches it is refused in under half
+a second in a native release build. A compiled `sh:pattern` is capped at
+`core_shacl::MAX_PATTERN_SIZE` (1 MiB) in that build, so a byte read stands for a bounded cost.
+The count depends only on the two graphs, so the same inputs are refused alike everywhere. The
+Turtle nesting bound applies in every build.
 
 **Held to rudof's verdicts.** `tests/differential.rs` runs both validators over `tests/plans/`
 (valid plans copied from ikigai-vocab's fixtures and ikigai-cli's plan tests, and a plan that

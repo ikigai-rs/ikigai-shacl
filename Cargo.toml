@@ -94,7 +94,10 @@ async-trait = "0.1"
 # that, left at their defaults, gave one caller ONE of this crate's two slots, so one runaway
 # refused that caller's every later validation (`core_shacl::caller_share` states ours; ledger
 # #1500, #1510). The #1427 behavior above is kept. ⚠ `^0.2.24` is a CEILING too (<0.3.0).
-ikigai-store = { version = "0.2.24", default-features = false }
+#
+# ★ OPTIONAL since 0.4.0, behind the `sparql` feature (ledger #2107): only `sh:select` and the
+# rudof path use it. A core-only build (`default-features = false`) links none of it.
+ikigai-store = { version = "0.2.24", default-features = false, optional = true }
 # The pool rudof's validator runs in (`on_rudof_pool`, ledger #1102): rudof splits a level of two
 # or more shapes with `par_iter_mut`, which runs on the global pool's 2 MiB workers unless it is
 # called from inside a pool of ours. ⚠ That only holds if this is the SAME rayon-core rudof's
@@ -106,7 +109,8 @@ rayon = { version = "1.7", optional = true }
 # The parser for the queries rudof will run, so `service::has_service` can walk them. It must
 # be the spargebra oxigraph parses with (0.4.x for oxigraph 0.5), which a caret unifies with on
 # its own; 0.4.7 is ikigai-store's floor. ⚠ `^0.4.7` is a CEILING too (<0.5.0).
-spargebra = "0.4.7"
+# Optional with `sparql`, like the store.
+spargebra = { version = "0.4.7", optional = true }
 # The term types rudof's `RdfData` stores (`RdfData::Term` IS `oxrdf::Term`), matched directly
 # so every IRI, including a literal's datatype and the parts of a triple term, is checked before
 # rudof renders a focus node into SPARQL (ledger #1099). Floor and features are rudof_rdf's own
@@ -117,21 +121,34 @@ spargebra = "0.4.7"
 # `rdf-12`. Turning it on for oxrdf alone, in a build where nothing turns it on for them, makes
 # all three fail to compile (E0004). rudof turns all of them on; the subset build turns none.
 oxrdf = "0.3.3"
-# The subset validator's own stack (`src/core_shacl.rs`), all of it already in `ikigai-store`'s
-# graph with default features off, so turning `rudof` off adds nothing beyond the store:
+# The subset validator's own stack (`src/core_shacl.rs`). The CORE half (every constraint but
+# `sh:sparql`) needs only `oxrdf`, `oxttl`, `oxsdatatypes` and `regex`, which is what a build with
+# default features off links (ledger #2107):
 #
-# - `oxigraph`: Turtle in and out (`io`), and the in-memory `Store` each `sh:select` is evaluated
-#   over, through `ikigai_store::service::evaluator()` (which refuses every `SERVICE`). Default
-#   features OFF, as the store takes it, so no RocksDB and no `http-client`. 0.5.1 is the
-#   store's own floor, and `substitute_variable` and `with_cancellation_token` are both there.
-#   ⚠ `^0.5.1` is a CEILING too (<0.6.0).
+# - `oxttl`: Turtle in (the data and shapes graphs) and out (the report), for the core build
+#   and every other. The parser and serializer oxigraph's `io` wraps for Turtle, so the bytes are
+#   the same. Each 0.2.x pins one oxrdf exactly, and 0.2.3 is the one that pins `=0.3.3`, the
+#   oxrdf floor above. ⚠ `^0.2.3` is a CEILING too (<0.3.0).
+# - `oxigraph` (optional, `sparql`): the in-memory `Store` each `sh:select` is evaluated over,
+#   through `ikigai_store::service::evaluator()` (which refuses every `SERVICE`), and the
+#   rudof path's Turtle parser. Default features OFF, as the store takes it, so no RocksDB and no
+#   `http-client`. 0.5.1 is the store's own floor, and `substitute_variable` and
+#   `with_cancellation_token` are both there. ⚠ `^0.5.1` is a CEILING too (<0.6.0).
 # - `oxsdatatypes`: the XSD value spaces `sh:datatype` checks a literal's lexical form against
 #   and `sh:minInclusive` and its siblings compare in. spareval pins it exactly, and a caret here
 #   unifies with that pin. ⚠ `^0.2.2` is a CEILING too (<0.3.0).
 # - `regex`: `sh:pattern`, the engine spareval's `REGEX` uses. ⚠ `^1.7` is a CEILING (<2.0.0).
-oxigraph = { version = "0.5.1", default-features = false }
+#   Default features OFF, keeping `std` and `unicode` (XPath patterns are Unicode-aware, so
+#   `\w` and the case-insensitive flag must be too): the `perf-*` features (the lazy DFA, the
+#   one-pass and backtracking engines, aho-corasick literal search) are a third of the core-only
+#   wasm, measured 2026-10-22 (1.89 → 1.43 MB raw, ledger #2107). Matching stays linear time on
+#   the PikeVM. A build with `sparql` gets them back through spareval's default-feature `regex`,
+#   so only the core-only build matches more slowly, and its work bound charges a match by the
+#   bytes it reads.
+oxttl = "0.2.3"
+oxigraph = { version = "0.5.1", default-features = false, optional = true }
 oxsdatatypes = "0.2.2"
-regex = "1.7"
+regex = { version = "1.7", default-features = false, features = ["std", "unicode"] }
 
 # The `module` feature turns this library into a standalone lazy-loadable WASM module via
 # `ikigai_module::wasm_module!`. CI checks it both ways, so neither half can rot unseen again:
@@ -186,11 +203,21 @@ version = "0.3"
 optional = true
 
 [features]
-# rudof is the default validator (ledger #1176): consumers that bind `urn:shacl:validate` today
-# keep exactly what they had. `--no-default-features` builds the subset validator alone, with no
-# rudof and no network stack; with both compiled, the endpoint uses rudof.
+# Three builds, each a superset of the one before (ledger #1176, #2107):
+#
+# - `default-features = false`: the subset validator's CORE constraints alone, on oxrdf, oxttl,
+#   oxsdatatypes and regex. No SPARQL engine, no store, no rudof, no network stack, and so small
+#   enough for an in-page wasm kernel. A shapes graph that uses `sh:sparql` or `sh:select` is
+#   REFUSED, naming the construct and the feature that enables it, never skipped.
+# - `sparql`: adds the subset's `sh:sparql` / `sh:select` constraints, evaluated over oxigraph's
+#   in-memory store behind ikigai-store's guards and time budget. This is what
+#   `default-features = false` gave through 0.3.x.
+# - `rudof` (the default): rudof's validator, which serves the endpoint when compiled. It implies
+#   `sparql`, since its path uses the same guards and budget. Consumers that take the defaults
+#   keep exactly what they had.
 default = ["rudof"]
-rudof = ["dep:shacl", "dep:sparql_service", "dep:rudof_rdf", "dep:rayon", "oxrdf/rdf-12"]
+sparql = ["dep:ikigai-store", "dep:spargebra", "dep:oxigraph"]
+rudof = ["sparql", "dep:shacl", "dep:sparql_service", "dep:rudof_rdf", "dep:rayon", "oxrdf/rdf-12", "oxttl/rdf-12"]
 # cargo build --release --lib --features module --target wasm32-unknown-unknown
 # The module is the rudof build, unchanged: it implies `rudof`.
 module = [

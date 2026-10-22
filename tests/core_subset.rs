@@ -119,20 +119,82 @@ fn a_recursive_shape_is_refused() {
 #[test]
 fn malformed_parameters_are_refused() {
     for (body, needle) in [
-        ("ex:S sh:targetClass ex:Person ; sh:in ( \"a\" \"b\" .", "parse error"),
-        ("ex:S sh:targetClass ex:Person ; sh:in ex:notAList .", "well-formed RDF list"),
-        ("ex:S sh:targetClass ex:Person ; sh:minCount 1 .", "property shape"),
-        ("ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:minCount -1 ] .", "non-negative"),
-        ("ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:minCount \"1\" ] .", "xsd:integer"),
-        ("ex:S sh:targetClass ex:Person ; sh:nodeKind sh:Thing .", "node kinds"),
-        ("ex:S sh:targetClass ex:Person ; sh:nodeKind \"IRI\" .", "node kinds"),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:in ( \"a\" \"b\" .",
+            "parse error",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:in ex:notAList .",
+            "well-formed RDF list",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:minCount 1 .",
+            "property shape",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:minCount -1 ] .",
+            "non-negative",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name ; sh:minCount \"1\" ] .",
+            "xsd:integer",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:nodeKind sh:Thing .",
+            "node kinds",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:nodeKind \"IRI\" .",
+            "node kinds",
+        ),
         ("ex:S sh:targetClass \"Person\" .", "must be an IRI"),
-        ("ex:S sh:targetClass ex:Person ; sh:class \"A\" .", "must be an IRI"),
-        ("ex:S sh:targetClass ex:Person ; sh:node \"T\" .", "must name a shape"),
-        ("ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name , ex:label ] .", "more than one `sh:path`"),
-        ("ex:S sh:targetClass ex:Person ; sh:pattern \"a\" , \"b\" ; sh:flags \"i\" .", "sh:flags"),
-        ("ex:S sh:targetClass ex:Person ; sh:pattern \"a\" ; sh:flags \"z\" .", "XPath flags"),
-        ("ex:S sh:targetClass ex:Person ; sh:pattern \"(\" .", "does not compile"),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:class \"A\" .",
+            "must be an IRI",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:node \"T\" .",
+            "must name a shape",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:property [ sh:path ex:name , ex:label ] .",
+            "more than one `sh:path`",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:pattern \"a\" , \"b\" ; sh:flags \"i\" .",
+            "sh:flags",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:pattern \"a\" ; sh:flags \"z\" .",
+            "XPath flags",
+        ),
+        (
+            "ex:S sh:targetClass ex:Person ; sh:pattern \"(\" .",
+            "does not compile",
+        ),
+    ] {
+        match validate_report(DATA, &shapes(body)) {
+            Err(Error::InvalidArgument { name, detail }) => {
+                assert_eq!(name, "shapes", "{body}: {detail}");
+                assert!(
+                    detail.contains(needle),
+                    "`{needle}` not in: {detail}\n{body}"
+                );
+            }
+            Err(Error::Endpoint(detail)) if needle == "parse error" => {
+                assert!(detail.contains(needle), "{detail}");
+            }
+            other => panic!("not refused (`{needle}`): {other:?}\n{body}"),
+        }
+    }
+}
+
+/// The malformed SHACL-SPARQL parameters, which only a build with `sparql` reads far enough to
+/// find malformed (without it, `sh:sparql` itself is refused: `tests/core_only.rs`).
+#[cfg(feature = "sparql")]
+#[test]
+fn malformed_sparql_parameters_are_refused() {
+    for (body, needle) in [
         ("ex:S sh:targetClass ex:Person ; sh:sparql [ sh:message \"m\" ] .", "no `sh:select`"),
         ("ex:S sh:targetClass ex:Person ; sh:sparql [ sh:select \"ASK { }\" ] .", "SELECT query"),
         ("ex:S sh:targetClass ex:Person ; sh:sparql [ sh:select \"SELECT nonsense\" ] .", "does not parse"),
@@ -148,19 +210,11 @@ fn malformed_parameters_are_refused() {
             "exactly one `sh:prefix` and one `sh:namespace`",
         ),
     ] {
-        match validate_report(DATA, &shapes(body)) {
-            Err(Error::InvalidArgument { name, detail }) => {
-                assert_eq!(name, "shapes", "{body}: {detail}");
-                assert!(detail.contains(needle), "`{needle}` not in: {detail}\n{body}");
-            }
-            Err(Error::Endpoint(detail)) if needle == "parse error" => {
-                assert!(detail.contains(needle), "{detail}");
-            }
-            other => panic!("not refused (`{needle}`): {other:?}\n{body}"),
-        }
+        refused(body, needle);
     }
 }
 
+#[cfg(feature = "sparql")]
 #[test]
 fn a_service_anywhere_in_a_select_is_refused_and_nothing_is_sent() {
     for select in [
@@ -176,6 +230,7 @@ fn a_service_anywhere_in_a_select_is_refused_and_nothing_is_sent() {
     }
 }
 
+#[cfg(feature = "sparql")]
 #[test]
 fn caller_sparql_is_bounded_before_it_is_parsed() {
     // Nesting past `MAX_SPARQL_NESTING`, as at every store door.
@@ -317,12 +372,23 @@ fn issue(kernel: &Kernel, data: &str, shapes: &str, as_type: &str) -> ikigai_cor
 fn the_plan_shapes_validate_through_the_endpoint_in_this_build() {
     // Whichever validator this build serves `urn:shacl:validate` from, a plan door's request
     // (ikigai-cli's plan_space: the plan as `data`, ikigai_vocab::SHAPES inline, Turtle back)
-    // answers with a report graph that says whether the plan conforms.
+    // answers with a report graph that says whether the plan conforms. The plan shapes carry
+    // `sh:select` constraints, so a build without `sparql` refuses them, naming the feature.
     let kernel = Kernel::new(Arc::new(ikigai_shacl::space()));
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/plans");
     for (name, conforms) in [("ok-plan-linkcheck", true), ("bad-cli-two-feeds", false)] {
         let plan = std::fs::read_to_string(format!("{dir}/{name}.ttl")).unwrap();
-        let report = issue(&kernel, &plan, ikigai_vocab::SHAPES, "text/turtle").unwrap();
+        let report = issue(&kernel, &plan, ikigai_vocab::SHAPES, "text/turtle");
+        if !cfg!(feature = "sparql") {
+            let err = report.expect_err("a build without `sparql` answered the plan shapes");
+            assert!(
+                matches!(&err, Error::InvalidArgument { name, detail }
+                    if name == "shapes" && detail.contains("`sparql` feature")),
+                "{err:?}"
+            );
+            continue;
+        }
+        let report = report.unwrap();
         assert!(report.contains("sh:ValidationReport"), "{report}");
         assert!(
             report.contains(&format!("sh:conforms {conforms}")),
