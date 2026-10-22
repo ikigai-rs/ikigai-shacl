@@ -42,7 +42,10 @@
 //!    runs on a stack grown by [`recursion_stack`] for what the bound admits, because a
 //!    recursive `foaf:knows` shape over a few thousand people is ordinary data.
 
-use ikigai_core::{Error, Result};
+#[cfg(any(feature = "rudof", test))]
+use ikigai_core::Error;
+#[cfg(feature = "rudof")]
+use ikigai_core::Result;
 #[cfg(feature = "rudof")]
 use rudof_rdf::rdf_core::term::{Object, Triple as _};
 #[cfg(feature = "rudof")]
@@ -52,11 +55,8 @@ use sparql_service::RdfData;
 #[cfg(feature = "rudof")]
 use std::collections::{HashMap, HashSet};
 
-/// How deep caller Turtle may nest RDF 1.2 triple terms and reified triples (`<<( … )>>`,
-/// `<< … >>`), counted per `<<`. The same number as `ikigai_store::limits::MAX_SPARQL_NESTING`:
-/// one bound on caller nesting across the doors. Real data nests these a handful deep; a
-/// debug build survived 300 levels on a 2 MiB thread and aborted at 3000.
-pub const MAX_TURTLE_NESTING: usize = 64;
+// Both validators use the shared scan before parsing caller Turtle.
+pub use ikigai_rdf::{check_turtle_nesting, MAX_TURTLE_NESTING};
 
 /// How deep the shapes graph may nest, counted in NODES along the longest chain of shape
 /// references and path operators, a recursive group counting all its shapes. The same 64, and
@@ -95,102 +95,6 @@ const RECURSION_STACK_PER_LEVEL: usize = if cfg!(debug_assertions) {
 /// (what [`data_recursion`] returned).
 pub(crate) fn recursion_stack(levels: usize) -> usize {
     levels.saturating_mul(RECURSION_STACK_PER_LEVEL)
-}
-
-/// Refuse caller Turtle that nests `<<` deeper than [`MAX_TURTLE_NESTING`], without parsing it.
-///
-/// The scan reads the text as oxttl 0.2's lexer does (`lexer.rs`), in the parts that decide
-/// what is code: strings in all four quote forms, closing at the FIRST unescaped delimiter (a
-/// long string at the first triple, a short one even across a line end), `<…>` IRIs as
-/// everything up to the first `>`, `#` comments to the line end, and `\`-escapes. So a `<<`
-/// inside a literal, an IRI or a comment is text, not nesting. Where the text is not Turtle the reading may differ from the
-/// parser's, and that is safe: rudof's `ReaderMode::Strict` stops at the parser's first
-/// error, so only the text before it is ever built into terms, and there the two agree.
-pub fn check_turtle_nesting(text: &str, arg: &str) -> Result<()> {
-    let b = text.as_bytes();
-    let at = |i: usize| b.get(i).copied();
-    let mut depth = 0usize;
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'#' => {
-                while i < b.len() && b[i] != b'\n' && b[i] != b'\r' {
-                    i += 1;
-                }
-            }
-            q @ (b'"' | b'\'') => {
-                if at(i + 1) == Some(q) && at(i + 2) == Some(q) {
-                    // A long string: ends at the first unescaped triple quote.
-                    i += 3;
-                    while i < b.len() {
-                        if b[i] == b'\\' {
-                            i += 2;
-                        } else if b[i] == q && at(i + 1) == Some(q) && at(i + 2) == Some(q) {
-                            i += 3;
-                            break;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                } else {
-                    // A short string: ends at the quote, and NOT at a line end, which Turtle
-                    // forbids but oxttl's `lenient()` lexer (lexer.rs:674) reads straight
-                    // through. Stopping there would take the real closing quote for an
-                    // opening one and hide what follows it.
-                    i += 1;
-                    while i < b.len() {
-                        match b[i] {
-                            b'\\' => i += 2,
-                            c if c == q => {
-                                i += 1;
-                                break;
-                            }
-                            _ => i += 1,
-                        }
-                    }
-                }
-            }
-            b'<' if at(i + 1) == Some(b'<') => {
-                depth += 1;
-                if depth > MAX_TURTLE_NESTING {
-                    return Err(Error::InvalidArgument {
-                        name: arg.to_string(),
-                        detail: format!(
-                            "this Turtle nests RDF 1.2 triple terms (`<<( … )>>`) or reified \
-                             triples (`<< … >>`) deeper than {MAX_TURTLE_NESTING} \
-                             (MAX_TURTLE_NESTING): the RDF library copies a nested triple term \
-                             recursively, once per level, where a stack overflow aborts the \
-                             whole host"
-                        ),
-                    });
-                }
-                i += 2;
-            }
-            b'<' => {
-                // An IRI, read as oxttl reads it: everything up to the first `>`, a `\` escaping
-                // what follows. NOT only IRIREF's characters: rudof parses `lenient()`, and then
-                // oxttl validates nothing inside the brackets, so `<x"> , <<( …` is one IRI and
-                // then real nesting, which a stricter reading would mistake for a string.
-                let mut j = i + 1;
-                while j < b.len() && b[j] != b'>' {
-                    j += if b[j] == b'\\' { 2 } else { 1 };
-                }
-                if j >= b.len() {
-                    // Never closed: the parser fails here, and builds nothing after it.
-                    break;
-                }
-                i = j + 1;
-            }
-            b'>' if at(i + 1) == Some(b'>') => {
-                depth = depth.saturating_sub(1);
-                i += 2;
-            }
-            // `\` outside a string is a prefixed name's escape (`ex:a\#b`): skip what it escapes.
-            b'\\' => i += 2,
-            _ => i += 1,
-        }
-    }
-    Ok(())
 }
 
 #[cfg(feature = "rudof")]
