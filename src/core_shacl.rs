@@ -1507,12 +1507,43 @@ fn compare(a: &Literal, b: &Literal) -> Option<std::cmp::Ordering> {
 /// can hold (`EvaluationBudget`: "make ONE per host and clone it"). The store's time defaults:
 /// 5 s for an ordinary caller, more only by a `urn:cap:store:budget:<ms>` grant, the 120 s
 /// ceiling for root. The overdue cap is this crate's own: [`MAX_OVERDUE_FLOOR`] (ledger
-/// #1510).
+/// #1510), and so are the reserve and the caller share (ledger #1002), see
+/// [`caller_share`].
 pub(crate) fn budget() -> &'static EvaluationBudget {
     static BUDGET: OnceLock<EvaluationBudget> = OnceLock::new();
     BUDGET.get_or_init(|| {
-        EvaluationBudget::new(TimeBudget::new(DEFAULT_BUDGET).with_max_overdue(max_overdue()))
+        EvaluationBudget::new(
+            TimeBudget::new(DEFAULT_BUDGET)
+                .with_max_overdue(max_overdue())
+                .with_reserve(0)
+                .with_caller_share(caller_share()),
+        )
     })
+}
+
+/// The budget's reserve and per-caller share, stated so that the overdue cap means what it
+/// meant through ikigai-store 0.2.23: NO slot reserved for the host, and each caller may use
+/// the whole cap ([`max_overdue`], at least [`MAX_OVERDUE_FLOOR`]).
+///
+/// ★ Why this crate states them (ledger #1002, after #1500/#1510). ikigai-store 0.2.24 split a
+/// budget's cap: a RESERVE only root and `urn:cap:store:reserve` may use (default 1), and of
+/// what is left, a SHARE per caller (default half, at least 1), where every capability that
+/// names no principal, every library call and anonymous request among them, is ONE caller. At
+/// this crate's cap of 2 those defaults leave a caller one slot, so one runaway `sh:select`
+/// refused every later validation by the same caller, which on a small host was everyone again:
+/// the failure [`MAX_OVERDUE_FLOOR`] exists to prevent, back through a new door
+/// (`tests/one_runaway.rs` went red on a fresh resolve the day 0.2.24 shipped). Brian's rule
+/// stands: the store's defaults stay, and a consumer states its own.
+///
+/// No reserve, because the reserve keeps room for a host's OWN reads of a store (its backup,
+/// its jobs), and this budget is this crate's own and only ever runs validations: a reserve
+/// here would keep one of two cores idle for a root validation. The whole cap as the share,
+/// because the cap was sized (the measurement on [`MAX_OVERDUE_FLOOR`]) as what ONE caller
+/// needs to keep answering through one runaway, and `tests/rudof_time_budget.rs` pins that a
+/// caller may fill the cap and only the one past it is refused. A smaller share per principal
+/// (so that one caller's runaways cannot crowd out another's) is a new policy, not this fix.
+fn caller_share() -> usize {
+    max_overdue()
 }
 
 /// The fewest validations that may be in flight, and so overdue, at once: TWO, so one
