@@ -24,6 +24,30 @@ fn shapes(body: &str) -> String {
     format!("{HEAD}{body}")
 }
 
+#[test]
+fn quoted_patterns_preserve_case_insensitive_flags() {
+    for flags in ["iq", "qi"] {
+        let body = shapes(&format!(
+            "ex:S sh:targetNode ex:a ; sh:property [ sh:path ex:v ; \
+             sh:pattern \"alice.smith\" ; sh:flags \"{flags}\" ] ."
+        ));
+        for (value, conforms) in [("AlIcE.SmItH", true), ("AlIcExSmItH", false)] {
+            let data = format!("{HEAD}ex:a ex:v \"{value}\" .");
+            let report = validate_report(&data, &body).unwrap();
+            assert_eq!(
+                report.conforms, conforms,
+                "flags={flags}, value={value}: {report:?}"
+            );
+        }
+    }
+    let body = shapes(
+        "ex:S sh:targetNode ex:a ; sh:property [ sh:path ex:v ; \
+         sh:pattern \"alice.smith\" ; sh:flags \"q\" ] .",
+    );
+    let report = validate_report(&format!("{HEAD}ex:a ex:v \"AlIcE.SmItH\" ."), &body).unwrap();
+    assert!(!report.conforms, "q alone must remain case sensitive");
+}
+
 /// The components of `report`'s results, sorted, by local name.
 fn components(report: &Report) -> Vec<String> {
     let mut got: Vec<String> = report

@@ -832,9 +832,17 @@ fn compile(shapes_ttl: &str, work: &mut Work) -> Result<Compiled> {
 
 /// `sh:pattern` with `sh:flags` (the XPath flags SPARQL's `REGEX` takes), compiled.
 fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
-    let mut builder = regex::RegexBuilder::new(source);
-    let mut literal = false;
-    for flag in flags.unwrap_or_default().chars() {
+    let flags = flags.unwrap_or_default();
+    // Quote before configuring the builder so `q` preserves the other flags.
+    let quoted;
+    let expression = if flags.contains('q') {
+        quoted = regex::escape(source);
+        &quoted
+    } else {
+        source
+    };
+    let mut builder = regex::RegexBuilder::new(expression);
+    for flag in flags.chars() {
         match flag {
             'i' => {
                 builder.case_insensitive(true);
@@ -848,16 +856,13 @@ fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
             'x' => {
                 builder.ignore_whitespace(true);
             }
-            'q' => literal = true,
+            'q' => {}
             other => {
                 return Err(refuse(format!(
                 "`sh:flags` holds `{other}`, which is not one of the XPath flags (i, s, m, x, q)"
             )))
             }
         }
-    }
-    if literal {
-        builder = regex::RegexBuilder::new(&regex::escape(source));
     }
     // Without `sparql` the work bound charges a match by the length of the text it reads, which
     // stands for its cost only while the compiled pattern is small: so it is capped too.
