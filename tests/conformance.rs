@@ -54,7 +54,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use ikigai_conformance::{rdf, Fixture, Suite};
+use ikigai_conformance::{rdf, Check, Fixture, Suite};
 use ikigai_core::{
     ArgRef, ArgSpec, Capability, Description, Exact, FnEndpoint, Iri, Kernel, ReprType,
     Representation, Request, Verb,
@@ -165,11 +165,7 @@ fn inline() {
     );
     assert_eq!(report.endpoints, 1, "one endpoint: {report}");
     assert_eq!(report.actions, 1, "one Source action: {report}");
-    assert_eq!(
-        report.checks.skipped().count(),
-        1,
-        "every check runs but FAILURES, which is off until a suite opts in: {report}"
-    );
+    every_check_ran(&report);
 }
 
 /// Shapes by reference: as cacheable as the shapes resource, and no more. Not
@@ -188,11 +184,7 @@ fn referenced() {
         "this module's endpoint and the fixture's: {report}"
     );
     assert_eq!(report.actions, 2, "one Source action each: {report}");
-    assert_eq!(
-        report.checks.skipped().count(),
-        1,
-        "every check runs but FAILURES, which is off until a suite opts in: {report}"
-    );
+    every_check_ran(&report);
 }
 
 /// The declarations above are a claim about golden threads; this is the claim.
@@ -364,6 +356,19 @@ fn the_report_graph_is_skolemized_under_a_content_address() {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/// Conformance 0.11.0 runs every check by default, DATATYPES and FAILURES included (0.10.0
+/// skipped FAILURES unless a suite opted in), and neither walk opts out of any.
+fn every_check_ran(report: &ikigai_conformance::Report) {
+    assert_eq!(
+        report.checks.skipped().count(),
+        0,
+        "every check runs: {report}"
+    );
+    for check in [Check::Datatypes, Check::Failures] {
+        assert!(report.checks.contains(check), "{check:?} ran: {report}");
+    }
+}
 
 fn source(args: &[(&str, &str)]) -> Request {
     args.iter().fold(
