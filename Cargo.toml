@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-shacl"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -14,15 +14,22 @@ categories = ["web-programming"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# 0.1.89 is the floor: `space_iri` (a configuration-free space names itself
+# 0.2.0 is the streams release (ledger #2261), and the pin: the old "0.1.89" meant <0.2.0
+# under 0.x rules, so moving onto it is a deliberate breaking change, not a resolve. Every
+# ikigai crate linked here (dev ones included) is on core 0.2.x, so the graph links ONE core.
+# ⚠ `^0.2.0` is a CEILING too (<0.3.0).
+#
+# Before it, 0.1.89 was the floor: `space_iri` (a configuration-free space names itself
 # `urn:iki:space:shacl`, ledger #987), and the release where a later `bind` drops a space's
 # name, which is what makes naming `space()` safe for a host that extends it. (The older
 # floors it subsumes: `ArgSpec::one_of`/`default_value` at 0.1.34, `ArgSpec::class` at
-# 0.1.32.) ⚠ `^0.1.89` is also a CEILING (<0.2.0).
-ikigai-core = "0.1.89"
+# 0.1.32.) All of them are in 0.2.0.
+ikigai-core = "0.2.0"
 # Shared lenient Turtle nesting scan and bound, first exported in 0.2.1 (0.2.0
 # has neither). RDF 1.2 stays controlled by rudof; this dependency enables no features.
-ikigai-rdf = "0.2.1"
+# 0.3.0 is the release on ikigai-core 0.2.0 (ledger #2261); 0.2.x links core 0.1.
+# ⚠ `^0.3.0` is a CEILING (<0.4.0).
+ikigai-rdf = "0.3.0"
 # rudof's consolidated SHACL crate (NOT the split shacl_validation/shacl_ast, which are
 # mid-rename and don't compose). In-memory (no rocksdb).
 #
@@ -93,11 +100,14 @@ async-trait = "0.1"
 # `TimeBudget::with_caller_share` landed there, with the default reserve and per-caller share
 # that, left at their defaults, gave one caller ONE of this crate's two slots, so one runaway
 # refused that caller's every later validation (`core_shacl::caller_share` states ours; ledger
-# #1500, #1510). The #1427 behavior above is kept. ⚠ `^0.2.24` is a CEILING too (<0.3.0).
+# #1500, #1510). The #1427 behavior above is kept.
+#
+# 0.3.0 is the pin now: the release on ikigai-core 0.2.0 (ledger #2261); every 0.2.x links
+# core 0.1. Everything above is in it. ⚠ `^0.3.0` is a CEILING too (<0.4.0).
 #
 # ★ OPTIONAL since 0.4.0, behind the `sparql` feature (ledger #2107): only `sh:select` and the
 # rudof path use it. A core-only build (`default-features = false`) links none of it.
-ikigai-store = { version = "0.2.24", default-features = false, optional = true }
+ikigai-store = { version = "0.3.0", default-features = false, optional = true }
 # The pool rudof's validator runs in (`on_rudof_pool`, ledger #1102): rudof splits a level of two
 # or more shapes with `par_iter_mut`, which runs on the global pool's 2 MiB workers unless it is
 # called from inside a pool of ours. ⚠ That only holds if this is the SAME rayon-core rudof's
@@ -168,9 +178,11 @@ regex = { version = "1.7", default-features = false, features = ["std", "unicode
 # 0.3.1 is the floor that builds against ikigai-core >= 0.1.78 (`Resolved` gained a private
 # field, so it can only be built through `Resolved::new`): 0.1.10, 0.2.0 and 0.3.0 all build it
 # by struct literal, and a fresh resolve (newest core under the caret above) fails to compile
-# them. ⚠ A `^0.3.1` pin is also a CEILING (<0.4.0). The library uses only `wasm_module!`,
+# them. The library uses only `wasm_module!`,
 # which is unchanged across 0.1 → 0.3 (no `ModuleSpace`, so no `ModuleFloor` to choose).
-version = "0.3.1"
+# 0.5.0 is the pin now: the release on ikigai-core 0.2.0 (ledger #2261); 0.3.x links core 0.1.
+# ⚠ `^0.5.0` is a CEILING (<0.6.0).
+version = "0.5.0"
 optional = true
 [dependencies.wasm-bindgen]
 # EXACT on purpose (ledger #1342, after #1193), unlike every other pin here. The `module`
@@ -237,16 +249,19 @@ futures = "0.3"
 # The module recipe as one test (tests/conformance.rs). 0.9.0 added core 0.1.105's contract-shape
 # checks (REQUIRED probes input groups, OUTPUTS honors output_from, PIPELINE's named-only line,
 # VALIDATE refuses a default on a binding) and RECOMPUTE; 0.10.0 adds FAILURES, OFF unless a suite
-# opts in (`Suite::check_failures()`; not yet, so the report carries one `skipped: FAILURES`).
-# REQUIRED (0.8.0), VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.10.0` is a CEILING
-# (<0.11.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
+# opts in. 0.11.0 is the release on ikigai-core 0.2.0 (ledger #2261) and turns two checks on by
+# default: DATATYPES (a literal for an ik: property is tagged with its rdfs:range) and FAILURES
+# (judging only actions that state failure classes), so the report skips nothing.
+# REQUIRED (0.8.0), VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.11.0` is a CEILING
+# (<0.12.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
 # through 0.7 and 0.8, and at "0.8.0" past 0.9, and the test kept reporting green against the old
 # definition of "done". Raise it deliberately when the suite moves.
-ikigai-conformance = "0.10.0"
+ikigai-conformance = "0.11.0"
 # The shapes the plan doors validate against, which `tests/differential.rs` runs both validators
 # over (ledger #1176). 0.1.108 is the floor because the plan corpus names the shapes that
 # `SHAPES` reports from (tests/plans/*.ttl `# expect:`), and by 0.1.108 a step's binds / mapOver /
-# forkOf / order shapes are the shared `urn:ikigai:shape:stage:*` (they were `step:*` at 0.1.103);
-# conformance 0.10.0 resolves vocab 0.1.108 whatever this says. ⚠ `^0.1.108` is a CEILING too
-# (<0.2.0).
-ikigai-vocab = "0.1.108"
+# forkOf / order shapes are the shared `urn:ikigai:shape:stage:*` (they were `step:*` at 0.1.103).
+# 0.2.0 is the pin now: the streams release (ledger #2261), on ikigai-core 0.2.0; the old
+# "0.1.108" meant <0.2.0 under 0.x rules. Conformance 0.11.0 resolves vocab 0.2.x whatever this
+# says. ⚠ `^0.2.0` is a CEILING too (<0.3.0).
+ikigai-vocab = "0.2.0"

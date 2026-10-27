@@ -57,14 +57,15 @@ blank property shapes did not finish in a minute.)
 
 ## Conformance
 
-`tests/conformance.rs` runs [`ikigai-conformance`](https://crates.io/crates/ikigai-conformance)
-over the module: ArgSpecs, capability enforcement, the RDF faces, cacheability, pipeline
-citizenship and naming, every finding at once. It walks **twice**, because `shapes` is a
-union and the two forms are two different truths about caching from one body of code:
-inline shapes make the result a *pure* function of two by-value documents (an empty
-golden-thread set is correct); shapes by reference make the report exactly as cacheable
-as the shapes resource, inheriting its thread, so cutting that thread recomputes the
-report. Both walks are clean.
+`tests/conformance.rs` runs
+[`ikigai-conformance`](https://crates.io/crates/ikigai-conformance) over the module:
+ArgSpecs, capability enforcement, the RDF faces (literal datatypes included), cacheability,
+pipeline citizenship, naming and failure classes, every finding at once. It walks **twice**,
+because `shapes` is a union and the two forms are two different truths about caching from
+one body of code: inline shapes make the result a *pure* function of two by-value documents
+(an empty golden-thread set is correct); shapes by reference make the report exactly as
+cacheable as the shapes resource, inheriting its thread, so cutting that thread recomputes
+the report. Both walks are clean.
 
 By default built on rudof's [`shacl`](https://crates.io/crates/shacl) crate (a build without
 rudof serves the same resource from a subset validator: see *Two validators* below). It links natively (CLI +
