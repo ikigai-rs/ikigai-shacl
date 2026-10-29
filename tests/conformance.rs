@@ -47,6 +47,16 @@
 //! by-reference kernel extends it with a fixture door, and since core 0.1.89 that
 //! `bind` drops the name, so the extended space does not claim doors it lacks.
 //!
+//! ## Bodies (conformance 0.12.0)
+//!
+//! BODIES compares the endpoint's `invoke` with its `invoke_body` directly, so it needs
+//! the module space itself, not just the kernel: each walk builds its kernel from an
+//! `Arc` of the space and hands the suite the same `Arc` (`Suite::body_space`). Without
+//! it the check reports the action UNPROBED rather than failing, so both walks also
+//! require nothing unprobed ([`clean`]). BODY-INPUTS has nothing to compare: `data`,
+//! `shapes` and `as` are read with `inline_str`, so none is declared `reads_body`, and
+//! the kernel needs no content store.
+//!
 //! No opt-outs. No module namespace: the report graph is `sh:` and `rdf:`, both
 //! well-known, so this module invents no term and needs nothing from the
 //! vocabulary. NAMES runs — `shacl-validate` is already kebab-case.
@@ -54,10 +64,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use ikigai_conformance::{rdf, Check, Fixture, Suite};
+use ikigai_conformance::{rdf, Check, Expected, Fixture, Suite};
 use ikigai_core::{
-    ArgRef, ArgSpec, Capability, Description, Exact, FnEndpoint, Iri, Kernel, ReprType,
-    Representation, Request, Verb,
+    ArgRef, ArgSpec, Capability, Description, EndpointSpace, Exact, FnEndpoint, Iri, Kernel,
+    ReprType, Representation, Request, Verb,
 };
 
 /// The one description this module binds.
@@ -110,16 +120,21 @@ const DATA: &str = r#"@prefix : <http://example.org/> .
 const OTHER_DATA: &str = r#"@prefix : <http://example.org/> .
 :dave a :Person ; :name 7 ."#;
 
-/// The kernel for the inline walk: this module's space and nothing else.
-fn inline_kernel() -> Kernel {
-    Kernel::new(Arc::new(ikigai_shacl::space()))
+/// The space for the inline walk: this module's space and nothing else. Shared, so the
+/// kernel and BODIES (`Suite::body_space`) hold the same one.
+fn inline_space() -> Arc<EndpointSpace> {
+    Arc::new(ikigai_shacl::space())
 }
 
-/// The kernel for the by-reference walk: the module's space plus one endpoint
+fn inline_kernel() -> Kernel {
+    Kernel::new(inline_space())
+}
+
+/// The space for the by-reference walk: the module's space plus one endpoint
 /// serving [`NAMED_SHAPES`] at [`SHAPES_IRI`], cacheable under [`SHAPES_THREAD`]. It is
 /// itself walked by the suite, so it declares a kebab id, one verb, no untyped
 /// input, and a thread.
-fn referenced_kernel() -> Kernel {
+fn referenced_space() -> Arc<EndpointSpace> {
     let shapes = FnEndpoint::new(SHAPES_ID, |_| {
         Ok(
             Representation::new(ReprType::new(TURTLE), NAMED_SHAPES.as_bytes().to_vec())
@@ -135,9 +150,11 @@ fn referenced_kernel() -> Kernel {
             .verb(Verb::Meta)
             .output("text/turtle"),
     );
-    Kernel::new(Arc::new(
-        ikigai_shacl::space().bind(Exact::new(SHAPES_IRI), shapes),
-    ))
+    Arc::new(ikigai_shacl::space().bind(Exact::new(SHAPES_IRI), shapes))
+}
+
+fn referenced_kernel() -> Kernel {
+    Kernel::new(referenced_space())
 }
 
 /// The fixture every walk uses, with `shapes` supplied by the caller.
@@ -150,21 +167,21 @@ fn fixture(shapes: &str) -> Fixture {
 /// Inline shapes: a pure function of two by-value documents.
 #[test]
 fn inline() {
+    let space = inline_space();
     let report = Suite::new()
         .fixture(fixture(SHAPES))
         .pure(ID)
         .cacheable(ID)
         .self_named_space("shacl", ikigai_shacl::space)
-        .run_blocking(&inline_kernel());
+        .body_space(space.clone())
+        .run_blocking(&Kernel::new(space));
     eprintln!("== inline shapes ==\n{report}");
-    assert!(report.is_clean(), "{report}");
+    report.assert_clean_with(&clean().endpoints(1).actions(1).walked([ID]));
     assert_eq!(
         ikigai_core::space_iri("shacl").as_str(),
         ikigai_shacl::SPACE_ID,
         "the exported name is the one the suite checked"
     );
-    assert_eq!(report.endpoints, 1, "one endpoint: {report}");
-    assert_eq!(report.actions, 1, "one Source action: {report}");
     every_check_ran(&report);
 }
 
@@ -172,18 +189,16 @@ fn inline() {
 /// `pure` — the report is a function of a resource that can change under it.
 #[test]
 fn referenced() {
+    let space = referenced_space();
     let report = Suite::new()
         .fixture(fixture(SHAPES_IRI))
         .cacheable(ID)
         .cacheable(SHAPES_ID)
-        .run_blocking(&referenced_kernel());
+        .body_space(space.clone())
+        .run_blocking(&Kernel::new(space));
     eprintln!("== shapes by reference ==\n{report}");
-    assert!(report.is_clean(), "{report}");
-    assert_eq!(
-        report.endpoints, 2,
-        "this module's endpoint and the fixture's: {report}"
-    );
-    assert_eq!(report.actions, 2, "one Source action each: {report}");
+    // This module's endpoint and the fixture's, one Source action each.
+    report.assert_clean_with(&clean().endpoints(2).actions(2).walked([ID, SHAPES_ID]));
     every_check_ran(&report);
 }
 
@@ -357,15 +372,29 @@ fn the_report_graph_is_skolemized_under_a_content_address() {
 
 // --- helpers ---------------------------------------------------------------
 
-/// Conformance 0.11.0 runs every check by default, DATATYPES and FAILURES included (0.10.0
-/// skipped FAILURES unless a suite opted in), and neither walk opts out of any.
+/// What both walks hold the report to beyond no findings: no opt-out of any kind, and no
+/// `unprobed:` line. The second is what keeps BODIES wired: without `Suite::body_space` it
+/// reports the action unprobed ("the module space is unavailable") rather than failing, so a
+/// clean report alone would pass with the check never compared.
+fn clean() -> Expected {
+    Expected::new().no_opt_outs().nothing_unprobed()
+}
+
+/// Conformance 0.12.0 runs every check by default: 0.11.0 turned on DATATYPES and FAILURES
+/// (0.10.0 skipped FAILURES unless a suite opted in), 0.12.0 BODIES and BODY-INPUTS. Neither
+/// walk opts out of any.
 fn every_check_ran(report: &ikigai_conformance::Report) {
     assert_eq!(
         report.checks.skipped().count(),
         0,
         "every check runs: {report}"
     );
-    for check in [Check::Datatypes, Check::Failures] {
+    for check in [
+        Check::Datatypes,
+        Check::Failures,
+        Check::Bodies,
+        Check::BodyInputs,
+    ] {
         assert!(report.checks.contains(check), "{check:?} ran: {report}");
     }
 }

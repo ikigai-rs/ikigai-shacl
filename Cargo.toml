@@ -252,11 +252,17 @@ futures = "0.3"
 # opts in. 0.11.0 is the release on ikigai-core 0.2.0 (ledger #2261) and turns two checks on by
 # default: DATATYPES (a literal for an ik: property is tagged with its rdfs:range) and FAILURES
 # (judging only actions that state failure classes), so the report skips nothing.
-# REQUIRED (0.8.0), VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.11.0` is a CEILING
-# (<0.12.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
-# through 0.7 and 0.8, and at "0.8.0" past 0.9, and the test kept reporting green against the old
-# definition of "done". Raise it deliberately when the suite moves.
-ikigai-conformance = "0.11.0"
+# 0.12.0 (ledger #2559) turns on BODIES (`invoke` and `invoke_body` agree, and a collect one byte
+# under budget is `OverBudget`, never a truncated success) and BODY-INPUTS (a `reads_body`
+# argument answers the same however its bytes arrive); the test hands the suite the kernel's
+# space so BODIES probes rather than reporting "unprobed". Its own floor pulls a newer core into
+# the test build; the library's `ikigai-core` pin is unchanged.
+# REQUIRED (0.8.0), VALIDATE (0.7.0) and SPACE-NAME (0.6.0) are older. ⚠ `^0.12.0` is a CEILING
+# (<0.13.0): this pin sat at "0.2.0" while the suite grew through 0.3 to 0.6, then at "0.6.0"
+# through 0.7 and 0.8, at "0.8.0" past 0.9, and at "0.11.0" when 0.12.0 shipped, and the test
+# kept reporting green against the old definition of "done". Raise it deliberately when the
+# suite moves.
+ikigai-conformance = "0.12.0"
 # The shapes the plan doors validate against, which `tests/differential.rs` runs both validators
 # over (ledger #1176). 0.1.108 is the floor because the plan corpus names the shapes that
 # `SHAPES` reports from (tests/plans/*.ttl `# expect:`), and by 0.1.108 a step's binds / mapOver /
