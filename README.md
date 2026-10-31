@@ -317,3 +317,9 @@ cargo test                      # rudof and the subset: parity corpus, conforman
 cargo test --no-default-features   # the subset build alone, as a host without rudof links it
 cd js-parity && npm ci && npm test   # shacl-engine parity
 ```
+
+## Accessibility
+
+What this crate emits that people read (the validation report, its messages, and error messages),
+the rules that output follows, how it is tested and how to report a barrier are in
+[ACCESSIBILITY.md](ACCESSIBILITY.md).
