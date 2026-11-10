@@ -104,12 +104,13 @@ async-trait = "0.1"
 # refused that caller's every later validation (`core_shacl::caller_share` states ours; ledger
 # #1500, #1510). The #1427 behavior above is kept.
 #
-# 0.4.0 is the pin now: the release on ikigai-core 0.3.0 (ledger #2965); earlier lines link an
-# older core. Everything above is in it. ⚠ `^0.4.0` is a CEILING too (<0.5.0).
+# 0.5.0 is the pin now: it adds the `store-graph-written` resource. The 0.4.0 release moved
+# to ikigai-core 0.3.0 (ledger #2965); everything above is kept.
+# ⚠ `^0.5.0` is a CEILING too (<0.6.0).
 #
 # ★ OPTIONAL since 0.4.0, behind the `sparql` feature (ledger #2107): only `sh:select` and the
 # rudof path use it. A core-only build (`default-features = false`) links none of it.
-ikigai-store = { version = "0.4.0", default-features = false, optional = true }
+ikigai-store = { version = "0.5.0", default-features = false, optional = true }
 # The pool rudof's validator runs in (`on_rudof_pool`, ledger #1102): rudof splits a level of two
 # or more shapes with `par_iter_mut`, which runs on the global pool's 2 MiB workers unless it is
 # called from inside a pool of ours. ⚠ That only holds if this is the SAME rayon-core rudof's
