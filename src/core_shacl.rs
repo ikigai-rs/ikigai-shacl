@@ -830,18 +830,43 @@ fn compile(shapes_ttl: &str, work: &mut Work) -> Result<Compiled> {
     })
 }
 
+/// Apply XPath's `x` flag before compiling, without Rust's extended-mode semantics.
+/// Whitespace removal precedes escape interpretation (XPath's `hello\ sworld` becomes
+/// `hello\sworld`). Escaped brackets do not open or close character classes.
+fn xpath_extended_pattern(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut class_depth = 0usize;
+    let mut escaped = false;
+    for c in source.chars() {
+        if class_depth == 0 && matches!(c, ' ' | '\t' | '\n' | '\r') {
+            continue;
+        }
+        out.push(c);
+        if escaped {
+            escaped = false;
+        } else {
+            match c {
+                '\\' => escaped = true,
+                '[' => class_depth += 1,
+                ']' => class_depth = class_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// `sh:pattern` with `sh:flags` (the XPath flags SPARQL's `REGEX` takes), compiled.
 fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
     let flags = flags.unwrap_or_default();
-    // Quote before configuring the builder so `q` preserves the other flags.
-    let quoted;
     let expression = if flags.contains('q') {
-        quoted = regex::escape(source);
-        &quoted
+        regex::escape(source)
+    } else if flags.contains('x') {
+        xpath_extended_pattern(source)
     } else {
-        source
+        source.to_string()
     };
-    let mut builder = regex::RegexBuilder::new(expression);
+    let mut builder = regex::RegexBuilder::new(&expression);
     for flag in flags.chars() {
         match flag {
             'i' => {
@@ -853,10 +878,9 @@ fn pattern(source: &str, flags: Option<&str>) -> Result<regex::Regex> {
             'm' => {
                 builder.multi_line(true);
             }
-            'x' => {
-                builder.ignore_whitespace(true);
-            }
-            'q' => {}
+            // XPath's `x` removes XML whitespace only outside character classes.
+            // Rust's mode also treats `#` as a comment and removes class whitespace.
+            'x' | 'q' => {}
             other => {
                 return Err(refuse(format!(
                 "`sh:flags` holds `{other}`, which is not one of the XPath flags (i, s, m, x, q)"
@@ -1614,7 +1638,21 @@ fn well_formed(literal: &Literal) -> bool {
         };
     }
     match local {
-        "decimal" => oxsdatatypes::Decimal::from_str(value).is_ok(),
+        // Decimal's lexical space is unbounded. Parsing into oxsdatatypes::Decimal
+        // also checks its fixed-width value range, rejecting valid large decimals.
+        "decimal" => {
+            let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
+            let mut digits = 0usize;
+            let mut points = 0usize;
+            for b in unsigned.bytes() {
+                match b {
+                    b'0'..=b'9' => digits += 1,
+                    b'.' => points += 1,
+                    _ => return false,
+                }
+            }
+            digits > 0 && points <= 1
+        }
         "double" => oxsdatatypes::Double::from_str(value).is_ok(),
         "float" => oxsdatatypes::Float::from_str(value).is_ok(),
         "boolean" => matches!(value, "true" | "false" | "1" | "0"),
