@@ -12,7 +12,7 @@ SVG or terminal output of its own. It is not a conformance claim. Adapted from t
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-shacl/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-shacl/security/advisories/new) |
-| Last reviewed | 2026-10-31 |
+| Last reviewed | 2026-11-12 |
 
 ## What it emits that people read
 
@@ -47,25 +47,42 @@ Followed by reading the source:
 
 ## How it is tested
 
-- `src/lib.rs`: `sparql_node_constraint_resolves_the_message_and_carries_the_value`,
-  `tagged_shape_message_beats_the_validator_default_and_lowest_tag_wins`,
-  `turtle_face_carries_the_same_resolved_message_value_and_path` and
-  `sparql_constraint_without_a_message_reports_null_message` pin how a result's message is chosen
-  and resolved. `tests/core_subset.rs`'s `a_shape_message_resolves_its_template_on_both_faces`
-  and `tests/differential.rs`'s `the_authored_messages_agree` hold both validators to the same
-  authored messages.
-- `tests/core_subset.rs` (`every_shacl_term_outside_the_subset_is_refused_by_name`,
-  `malformed_parameters_are_refused` and others), `tests/core_only.rs`
-  (`a_sparql_constraint_is_refused_naming_the_feature`), `tests/closed_shapes.rs`
-  (`a_malformed_closed_is_refused_by_name`) and `tests/service_egress.rs`
-  (`the_refusal_carries_the_shared_consumer_text_after_its_own_sentence`) check that refusals
-  name what they refuse.
-- **No automated accessibility checker, browser or assistive technology has been used on this
-  output.**
+Every named check has a result: Pass, Fail or Blocked, with evidence. Pass covers only the
+stated check, not overall accessibility. The runs below used the unchanged main source at
+[d2cfb84](https://github.com/ikigai-rs/ikigai-shacl/commit/d2cfb84a8b4363a8906835e986e3f8197a7f445b)
+on 2026-11-12, with Cargo 1.99.1 and
+rustc 1.99.1. The commands were `cargo test --lib --tests` (default rudof build) and
+`cargo test --no-default-features --lib --tests` (core-only subset build). These are functional
+tests of report contents and refusals; they do not evaluate how a person reads the output.
+CI repeats these tests with the `module` feature and with default features off through
+[ci.yml](.github/workflows/ci.yml). Neither these runs nor CI establish WCAG conformance.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Authored messages, resolved placeholders, language tags and report faces | Pass | Both commands above: `src/lib.rs` tests `sparql_node_constraint_resolves_the_message_and_carries_the_value` (default build only), `tagged_shape_message_beats_the_validator_default_and_lowest_tag_wins` and `turtle_face_carries_the_same_resolved_message_value_and_path`; `tests/core_subset.rs` test `a_shape_message_resolves_its_template_on_both_faces`; default-build `tests/differential.rs` test `the_authored_messages_agree`. Covers the asserted examples, not message clarity or language suitability. |
+| Refusals name unsupported terms and malformed parameters | Pass | Both commands above: `tests/core_subset.rs` tests `every_shacl_term_outside_the_subset_is_refused_by_name` and `malformed_parameters_are_refused`, and `tests/closed_shapes.rs` test `a_malformed_closed_is_refused_by_name`. Checks the named cases, not every possible error. |
+| Missing SPARQL feature is named in a refusal | Pass | Core-only command above: `tests/core_only.rs` test `a_sparql_constraint_is_refused_naming_the_feature`. Checks the feature refusal, not usability of the advice. |
+| SERVICE refusal carries the shared consumer advice | Pass | Default command above: `tests/service_egress.rs` test `the_refusal_carries_the_shared_consumer_text_after_its_own_sentence`. Checks sentence order and advice text, not reader comprehension. |
+| SPARQL result always has an explanatory message | Fail | Default command above: `src/lib.rs` test `sparql_constraint_without_a_message_reports_null_message` passes by asserting the missing message. Confirms a barrier, not an accessible result. |
+| Reader can choose the message language | Fail | Both commands above: `src/lib.rs` test `tagged_shape_message_beats_the_validator_default_and_lowest_tag_wins` confirms selection by lowest language tag. Source review of `ReportResult::message` and `core_shacl::message_term` finds no reader language preference. |
+| Subset default messages explain how to fix data | Fail | Source review on 2026-11-12: `default_message` in `src/core_shacl.rs` still emits terse constraint names such as `MinCount(1) not satisfied`; no repair advice. Not a reader study. |
+| Report identifiers have shorter readable labels | Fail | Source review on 2026-11-12: `ReportResult` in `src/lib.rs` and report serialization in `src/core_shacl.rs` and `src/rudof_engine.rs` expose identifiers without a shorter-label field. No listening test. |
+| Error messages consistently explain recovery | Fail | Source review on 2026-11-12: `src/rudof_engine.rs` passes through library messages after `shapes compile error`, `validation error` and `json error`, without recovery advice. No reader comprehension test. |
+| Output meaning does not depend on color | Pass | Source review on 2026-11-12 of report and error construction in `src/lib.rs`, `src/core_shacl.rs`, `src/rudof_engine.rs` and `src/depth.rs`: text and structured fields, no color styling. Does not test a host's presentation. |
+| Default rudof message clarity | Blocked | No reader evaluation of rudof's default wording was performed for this review. Functional tests do not establish clarity. |
+| Automated accessibility checker | Blocked | No automated accessibility checker has been run on this output; no host page or browser checker is configured in this repository. |
+| Browser presentation, zoom, reflow and contrast | Blocked | No browser evaluation was performed; this crate supplies reports and errors for a host to present. A host presentation is needed to run these checks. |
+| Manual keyboard | Blocked | No person performed a keyboard pass through a host presenting this output; no interactive host session was available for this review. |
+| Screen reader | Blocked | No screen reader session was available or used on this output for this review. |
+| Screen magnifier | Blocked | No screen magnifier session was available or used on this output for this review. |
+| Speech input | Blocked | No speech-input session was available or used on this output for this review. |
+| Switch access | Blocked | No switch-access session was available or used on this output for this review. |
+| Braille display | Blocked | No braille display was available or used on this output for this review. |
 
 ## Known limitations
 
-Found by reading the source on 2026-10-31, not by testing:
+Rechecked against source on 2026-11-12; the table above distinguishes functional tests from
+source review and unrun reader evaluations:
 
 - The subset validator's default messages are terse and technical (`MinCount(1) not
   satisfied`, `NodeKind constraint not satisfied`, `In constraint not satisfied`, `Expected
@@ -73,11 +90,11 @@ Found by reading the source on 2026-10-31, not by testing:
   how to fix the data. The focus node, path and value are in the result's other fields. rudof's
   own default wording, used by the default build, has not been reviewed here.
 - A SHACL-SPARQL constraint with no `sh:message` produces a result with no message at all (JSON
-  `null`): a reader sees only IRIs.
+  `null`): the remaining fields identify the violation without an explanatory sentence.
 - A reader cannot choose the message language: when a shape has messages in several languages,
   the JSON face reports the one with the lowest language tag.
-- Every term in the report is an IRI or a skolemized node name
-  (`urn:ikigai:shacl:report:b3:…:data.b0`), exact but long to read or listen to; the report
+- Report identifiers include IRIs and skolemized node names
+  (`urn:ikigai:shacl:report:b3:…:data.b0`), which can be long to read or listen to; the report
   carries no shorter labels.
 - Several errors pass a library's message through after a stage name (for example
   `urn:shacl:validate: shapes compile error: …`, `validation error: …`, `json error: …`) and say
@@ -87,7 +104,10 @@ Found by reading the source on 2026-10-31, not by testing:
 
 Read this file before changing any output listed above: the report's faces, a default message,
 or an error. Keep meaning in words, keep a refusal a sentence that names what it refuses and why,
-and say in the pull request what was tested, with what, and what was not.
+and give each check in the pull request a `Check | Result | Evidence` row: Pass, Fail or
+Blocked, with the command or test, tool and version, or why it could not run. Keep unrun checks
+as Blocked, including assistive technology nobody used. A historical run CI does not repeat
+is Blocked with its date, not Pass.
 
 ## Reporting a barrier
 
@@ -103,3 +123,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-12 | Record each check as Pass, Fail or Blocked, rerun report and refusal tests on main, and distinguish functional coverage from unrun accessibility evaluations. |
