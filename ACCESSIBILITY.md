@@ -96,6 +96,12 @@ source review and unrun reader evaluations:
 - Report identifiers include IRIs and skolemized node names
   (`urn:ikigai:shacl:report:b3:…:data.b0`), which can be long to read or listen to; the report
   carries no shorter labels.
+- In the default build, rudof serves the endpoint and counts `sh:minLength` and `sh:maxLength`
+  in UTF-8 bytes, not characters (https://github.com/rudof-project/rudof/issues/963, ledger
+  #3837). A writer in a non-Latin script gets less room under the same shape than an English
+  writer: about a third for CJK (3 bytes a character) and half for Cyrillic or Greek (2). The
+  subset validator counts characters. `tests/string_length.rs` checks both and has a tripwire
+  that fails once rudof is fixed.
 - Several errors pass a library's message through after a stage name (for example
   `urn:shacl:validate: shapes compile error: …`, `validation error: …`, `json error: …`) and say
   nothing about what to do.
