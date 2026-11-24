@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-shacl"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
@@ -55,13 +55,24 @@ ikigai-rdf = "0.6.0"
 # the `upstream-latest` job in ikigai-devtools' `.github/workflows/upstream-watch.yml` is
 # what says whether the next release still compiles against this call site.
 #
-# 0.3.22 is the FLOOR because it is the first release whose validator builds for wasm:
-# 0.3.18 gated `shacl::validator` (and `sparql_service::RdfData`) behind
+# 0.3.42 is the FLOOR and the only release inside the bounds (ledger #4195): it is the first
+# `shacl` release that counts `sh:minLength`/`sh:maxLength` in characters, not UTF-8 bytes
+# (rudof-project/rudof#963, fixed upstream in 0.3.40, but `shacl` skipped 0.3.40 and 0.3.41 on
+# crates.io; `sparql_service` and `rudof_rdf` published both). `tests/string_length.rs` holds
+# it to the character count. The move from 0.3.24 needed no source change here: rudof's
+# `sh:sparql` query assembly (`shacl::validator::constraints::sparql`) is byte-identical, and
+# the processor still splits a level with `par_iter_mut`. Two behaviors did change, both in
+# `rudof_rdf`: from 0.3.40 its native target no longer turns on oxigraph's `http-client`, and
+# its strict Turtle reader now refuses an IRI holding `>` in a literal's datatype or inside a
+# triple term (tests/service_egress.rs records both). Resolved from scratch, built native and
+# wasm, and tested on 2026-11-24.
+#
+# The history: 0.3.22 was the floor before it, the first release whose validator builds for
+# wasm: 0.3.18 gated `shacl::validator` (and `sparql_service::RdfData`) behind
 # `cfg(not(target_family = "wasm"))`, so the `module` feature below could not build for the
 # target it exists for. 0.3.22 removed that gate and moved `RdfData` / `DataValidation` behind
-# a default-on `sparql` feature, which the default features here keep on. The ceiling is the
-# newest release tested (0.3.24, 2026-10-04): both ends were resolved from scratch, built
-# native and wasm, and tested, with no change to this crate's code.
+# a default-on `sparql` feature, which the default features here keep on. 0.3.24 was the
+# ceiling (2026-10-04) until the move to 0.3.42.
 #
 # There is no longer a direct `prefixmap` constraint. It existed because prefixmap 0.3.22
 # removed a method rudof_rdf 0.3.18 calls; rudof_rdf 0.3.22+ requires `prefixmap ^0.3.22`
@@ -71,12 +82,13 @@ ikigai-rdf = "0.6.0"
 # ours changed. The bounds stop a break in these three crates, not in theirs.
 #
 # ★ All three are OPTIONAL, behind the `rudof` feature (on by default; ledger #1176). rudof cannot
-# be built without a network stack on native: `rudof_iri` depends on reqwest non-optionally, and
-# `rudof_rdf`'s native target forces oxigraph's `http-client` and tokio. A host that turns
+# be built without a network stack on native: `rudof_iri` depends on reqwest non-optionally,
+# and `rudof_rdf`'s native target forces tokio. (Through 0.3.39 it forced
+# oxigraph's `http-client` too; 0.3.40 dropped that, ledger #4191.) A host that turns
 # `rudof` off still serves `urn:shacl:validate`, from the subset validator in `src/core_shacl.rs`.
-shacl = { version = ">=0.3.22, <0.3.25", optional = true }
-sparql_service = { version = ">=0.3.22, <0.3.25", optional = true }  # RdfData — the in-memory RDF data graph
-rudof_rdf = { version = ">=0.3.22, <0.3.25", optional = true }       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
+shacl = { version = ">=0.3.42, <0.3.43", optional = true }
+sparql_service = { version = ">=0.3.42, <0.3.43", optional = true }  # RdfData — the in-memory RDF data graph
+rudof_rdf = { version = ">=0.3.42, <0.3.43", optional = true }       # RDFFormat / ReaderMode / OxigraphInMemory / BuildRDF
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -251,6 +263,16 @@ module = [
     "dep:console_error_panic_hook",
     "dep:futures",
 ]
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# TEST BUILDS ONLY: oxigraph's `http-client`, so `tests/service_egress.rs` runs where rudof's
+# private SPARQL evaluator CAN reach the network. rudof_rdf turned it on itself through 0.3.39;
+# from 0.3.40 it does not, but any crate in a host's graph that turns it on (oxigraph's own
+# default features do) turns it on for rudof by feature unification, and the `SERVICE` guard in
+# `src/rudof_engine.rs` exists for that build. A dev-dependency is not a normal edge, so the
+# core-only forbid list in ci.yml (`cargo tree -e normal`) is unaffected, and no published build
+# links it. Same version and default features as the normal `oxigraph` above.
+oxigraph = { version = "0.5.1", default-features = false, features = ["http-client"] }
 
 [dev-dependencies]
 # `executor::block_on`, which the integration tests drive the kernel with, in every feature

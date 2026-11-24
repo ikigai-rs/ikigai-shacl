@@ -19,7 +19,7 @@
 //! - **`rudof`** (the default feature): rudof's consolidated `shacl` crate, all of SHACL Core
 //!   and SHACL-SPARQL's `sh:select`, behind the bounds in `rudof_engine`. A heavy dependency
 //!   tree, and one that cannot be built without a network stack on native (rudof's IRI crate
-//!   links reqwest, and its RDF crate turns on oxigraph's `http-client`).
+//!   links reqwest, and its RDF crate turns on tokio).
 //! - **[`core_shacl`]**, always compiled: a subset validator with no rudof, no network stack and
 //!   no recursion over either graph, for a host that turns `rudof` off. It covers what
 //!   `ikigai_vocab::SHAPES` uses and a few cheap neighbors, and REFUSES, by name, every SHACL

@@ -62,6 +62,7 @@ CI repeats these tests with the `module` feature and with default features off t
 | Authored messages, resolved placeholders, language tags and report faces | Pass | Both commands above: `src/lib.rs` tests `sparql_node_constraint_resolves_the_message_and_carries_the_value` (default build only), `tagged_shape_message_beats_the_validator_default_and_lowest_tag_wins` and `turtle_face_carries_the_same_resolved_message_value_and_path`; `tests/core_subset.rs` test `a_shape_message_resolves_its_template_on_both_faces`; default-build `tests/differential.rs` test `the_authored_messages_agree`. Covers the asserted examples, not message clarity or language suitability. |
 | Refusals name unsupported terms and malformed parameters | Pass | Both commands above: `tests/core_subset.rs` tests `every_shacl_term_outside_the_subset_is_refused_by_name` and `malformed_parameters_are_refused`, and `tests/closed_shapes.rs` test `a_malformed_closed_is_refused_by_name`. Checks the named cases, not every possible error. |
 | Missing SPARQL feature is named in a refusal | Pass | Core-only command above: `tests/core_only.rs` test `a_sparql_constraint_is_refused_naming_the_feature`. Checks the feature refusal, not usability of the advice. |
+| `sh:minLength` and `sh:maxLength` count characters, not bytes | Pass | Both commands above, on this branch (rudof `shacl` 0.3.42) on 2026-11-24: `tests/string_length.rs` tests `the_subset_validator_counts_characters` and `the_served_validator_counts_characters` (CJK, Latin and non-BMP text, literals and IRIs). Checks the count, not how a writer experiences the limit. |
 | SERVICE refusal carries the shared consumer advice | Pass | Default command above: `tests/service_egress.rs` test `the_refusal_carries_the_shared_consumer_text_after_its_own_sentence`. Checks sentence order and advice text, not reader comprehension. |
 | SPARQL result always has an explanatory message | Fail | Default command above: `src/lib.rs` test `sparql_constraint_without_a_message_reports_null_message` passes by asserting the missing message. Confirms a barrier, not an accessible result. |
 | Reader can choose the message language | Fail | Both commands above: `src/lib.rs` test `tagged_shape_message_beats_the_validator_default_and_lowest_tag_wins` confirms selection by lowest language tag. Source review of `ReportResult::message` and `core_shacl::message_term` finds no reader language preference. |
@@ -96,12 +97,6 @@ source review and unrun reader evaluations:
 - Report identifiers include IRIs and skolemized node names
   (`urn:ikigai:shacl:report:b3:…:data.b0`), which can be long to read or listen to; the report
   carries no shorter labels.
-- In the default build, rudof serves the endpoint and counts `sh:minLength` and `sh:maxLength`
-  in UTF-8 bytes, not characters (https://github.com/rudof-project/rudof/issues/963, ledger
-  #3837). A writer in a non-Latin script gets less room under the same shape than an English
-  writer: about a third for CJK (3 bytes a character) and half for Cyrillic or Greek (2). The
-  subset validator counts characters. `tests/string_length.rs` checks both and has a tripwire
-  that fails once rudof is fixed.
 - Several errors pass a library's message through after a stage name (for example
   `urn:shacl:validate: shapes compile error: …`, `validation error: …`, `json error: …`) and say
   nothing about what to do.
@@ -130,3 +125,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-12 | Record each check as Pass, Fail or Blocked, rerun report and refusal tests on main, and distinguish functional coverage from unrun accessibility evaluations. |
+| 2026-11-24 | Remove the byte-counted `sh:minLength`/`sh:maxLength` limitation: rudof `shacl` 0.3.42 counts characters, and `tests/string_length.rs` now holds the served validator to it in every build (ledger #4195). Add the string-length check row. |

@@ -1,7 +1,7 @@
 //! A SHACL subset validator with no rudof, no network stack and no recursion (ledger #1176).
 //!
-//! rudof cannot be built without a network stack on native (`rudof_iri` links reqwest, and
-//! `rudof_rdf`'s native target turns on oxigraph's `http-client` and tokio), and its validator
+//! rudof cannot be built without a network stack on native (`rudof_iri` links reqwest,
+//! and `rudof_rdf`'s native target turns on tokio), and its validator
 //! recurses along both graphs. A host that only needs the shapes it ships, such as a plan door
 //! validating against `ikigai_vocab::SHAPES`, turns the `rudof` feature off and is served from
 //! here instead, under the same name and with the same report.

@@ -390,6 +390,51 @@ fn case(name: &str, n: usize) -> (String, String) {
                 ),
             )
         }
+        // Shape references through SHACL 1.2 node expressions, which rudof parses from shacl
+        // 0.3.42 on (ledger #4195), `n` shapes deep. `src/depth.rs` does not follow these
+        // predicates; rudof grows its own stack at each of these sites on native.
+        "nex-expression" | "nex-filter" | "nex-target-where" | "nex-target-node"
+        | "nex-deactivated" | "nex-node-by-expression" => {
+            let link = |i: usize| -> String {
+                let next = format!("ex:S{}", i + 1);
+                match name {
+                    "nex-expression" => format!("sh:expression [ shnex:nodesMatching {next} ]"),
+                    "nex-filter" => format!(
+                        "sh:targetNode ex:a ; sh:expression [ shnex:filterShape {next} ; \
+                         shnex:nodes [ shnex:var \"focusNode\" ] ]"
+                    ),
+                    "nex-target-where" => format!("sh:targetWhere {next}"),
+                    "nex-target-node" => format!("sh:targetNode [ shnex:nodesMatching {next} ]"),
+                    "nex-deactivated" => format!("sh:deactivated [ shnex:nodesMatching {next} ]"),
+                    _ => format!("sh:targetNode ex:a ; sh:nodeByExpression {next}"),
+                }
+            };
+            let shapes: String = (0..n)
+                .map(|i| format!("ex:S{i} a sh:NodeShape ; {} .\n", link(i)))
+                .collect();
+            (
+                DATA.into(),
+                format!(
+                    "{HEAD}@prefix shnex: <http://www.w3.org/ns/shacl-node-expr#> .\n\
+                     {shapes}ex:S{n} a sh:NodeShape .\n"
+                ),
+            )
+        }
+        // The same through the data: a shape that refers back to itself through a node
+        // expression, over a chain of `n` links.
+        "nex-data-chain" => (
+            format!(
+                "@prefix ex: <http://example.org/> .\n{}",
+                (0..n)
+                    .map(|i| format!("ex:n{i} ex:next ex:n{} .\n", i + 1))
+                    .collect::<String>()
+            ),
+            format!(
+                "{HEAD}@prefix shnex: <http://www.w3.org/ns/shacl-node-expr#> .\n\
+                 ex:S a sh:NodeShape ; sh:targetNode ex:n0 ;\n  \
+                 sh:expression [ shnex:filterShape ex:S ; shnex:nodes [ shnex:pathValues ex:next ] ] .\n"
+            ),
+        ),
         other => panic!("no probe named {other}"),
     }
 }
@@ -758,12 +803,19 @@ fn recursion_along_the_data_runs_and_aborts_nothing() {
         "data-inverse-chain",
         "data-chain-and",
         "data-chain-or",
-        "data-chain-xone",
         "data-chain-qualified",
     ] {
         let outcome = probe(name, 3000);
         assert!(outcome.starts_with("ok "), "{name}: {outcome}");
     }
+    // rudof `shacl` 0.3.42 refuses recursion through `sh:xone` (and `sh:not`) when it compiles
+    // the shapes: `xone` negates its members, so the cycle is not stratified, and no fixpoint
+    // gives it one answer. 0.3.24 validated it (ledger #4195). It still aborts nothing.
+    let outcome = probe("data-chain-xone", 3000);
+    assert!(
+        outcome.starts_with("err ") && outcome.contains("negative cycles (non-stratified)"),
+        "data-chain-xone: {outcome}"
+    );
 }
 
 #[test]
@@ -798,4 +850,38 @@ fn nesting_the_turtle_parser_carries_is_not_refused() {
         let outcome = probe(name, 200_000);
         assert!(outcome.starts_with("ok "), "{name}: {outcome}");
     }
+}
+
+/// Shape references through SHACL 1.2 node expressions (rudof `shacl` 0.3.42, ledger #4195),
+/// nested 3,000 deep, are refused by `MAX_SHAPE_DEPTH` before rudof compiles them (unbounded,
+/// 30,000 levels held up to 5.2 GB until the budget ran out); and recursion through one along a
+/// 3,000-link data chain is refused by rudof itself as non-stratified. None of it aborts.
+#[test]
+fn node_expression_references_are_refused_and_abort_nothing() {
+    for name in [
+        "nex-expression",
+        "nex-filter",
+        "nex-target-where",
+        "nex-target-node",
+        "nex-deactivated",
+        "nex-node-by-expression",
+    ] {
+        let outcome = probe(name, 3000);
+        assert!(
+            refused_as(&outcome, "shapes", "MAX_SHAPE_DEPTH"),
+            "{name}: {outcome}"
+        );
+        // Two nodes a link (the shape and its expression node), so 31 links fit in 64.
+        let outcome = probe(name, BOUND / 2 - 1);
+        assert!(
+            outcome.starts_with("ok "),
+            "{name} at {}: {outcome}",
+            BOUND - 2
+        );
+    }
+    let outcome = probe("nex-data-chain", 3000);
+    assert!(
+        outcome.starts_with("err ") && outcome.contains("negative cycles (non-stratified)"),
+        "nex-data-chain: {outcome}"
+    );
 }

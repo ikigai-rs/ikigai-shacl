@@ -5,16 +5,14 @@
 //! Unicode code point. So "文" (3 UTF-8 bytes), "é" (2) and "😀" (4, outside the BMP, and one
 //! code point though UTF-16 needs two code units for it) each count 1.
 //!
-//! The subset validator (`core_shacl`) counts characters, and every build runs its cases.
-//!
-//! ⚠ rudof does NOT, and rudof serves `urn:shacl:validate` in the default build. Its native
-//! validators compare `str::len()`, the byte count (rudof `shacl` 0.3.24 through 0.3.39,
-//! `validator/constraints/core/string_based/{min,max}_length.rs`), so 3,333 "文" (9,999 bytes)
-//! fail `sh:maxLength 3333` and 3 "文" (9 bytes) pass `sh:minLength 5`. Reported upstream as
-//! https://github.com/rudof-project/rudof/issues/963. The rudof cases below state the right
-//! answers and are ignored until a fixed release is inside our bounds; the tripwire
-//! `rudof_still_counts_bytes` asserts today's wrong answer, so the upstream-watch run against a
-//! fixed rudof fails there and says to turn the ignored cases on.
+//! Both validators count characters, and every build runs both cases: the subset validator
+//! (`core_shacl`) always has, and rudof, which serves `urn:shacl:validate` in the default
+//! build, does from `shacl` 0.3.42. Through 0.3.39 its native validators compared `str::len()`,
+//! the byte count (`validator/constraints/core/string_based/{min,max}_length.rs`), so 3,333
+//! "文" (9,999 bytes) failed `sh:maxLength 3333` and 3 "文" (9 bytes) passed `sh:minLength 5`
+//! (https://github.com/rudof-project/rudof/issues/963, fixed upstream in 0.3.40; `shacl`'s next
+//! release on crates.io was 0.3.42). ikigai-shacl moved its rudof bounds to 0.3.42 for it
+//! (ledger #4195), and the tripwire that asserted the byte count failed there first.
 
 use ikigai_shacl::{core_shacl, Report};
 
@@ -114,32 +112,8 @@ fn the_subset_validator_counts_characters() {
     all(core_shacl::validate_report);
 }
 
-/// What `urn:shacl:validate` answers in this build. Without `rudof` that is the subset, so it
-/// runs; with it, rudof, which counts bytes (rudof-project/rudof#963).
+/// What `urn:shacl:validate` answers in this build: rudof by default, the subset without it.
 #[test]
-#[cfg_attr(
-    feature = "rudof",
-    ignore = "rudof counts UTF-8 bytes: https://github.com/rudof-project/rudof/issues/963"
-)]
 fn the_served_validator_counts_characters() {
     all(ikigai_shacl::validate_report);
-}
-
-/// The tripwire for rudof-project/rudof#963. When this fails, rudof counts characters: remove
-/// this test and the `ignore` on `the_served_validator_counts_characters`.
-#[cfg(feature = "rudof")]
-#[test]
-fn rudof_still_counts_bytes() {
-    let wrong = |unit: &str, n: usize, constraint: &str, limit: usize| {
-        let text = unit.repeat(n);
-        ikigai_shacl::validate_report(&data(&text), &shapes(constraint, limit))
-            .expect("validates")
-            .conforms
-    };
-    let fixed = "rudof now counts characters (rudof-project/rudof#963): turn on \
-                 `the_served_validator_counts_characters` and remove this tripwire";
-    // 3,333 characters, 9,999 bytes: refused by a byte count.
-    assert!(!wrong("文", 3333, "maxLength", 3333), "{fixed}");
-    // 3 characters, 9 bytes: admitted by a byte count.
-    assert!(wrong("文", 3, "minLength", 5), "{fixed}");
 }

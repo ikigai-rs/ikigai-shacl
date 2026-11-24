@@ -105,7 +105,8 @@ fn compile_shapes(ttl: &str) -> Result<(IRSchema, depth::Structure)> {
 //    2 MiB workers (ledger #1102).
 //
 // ⚠ Step 2 mirrors rudof's private query assembly (`basic_validator.rs` and
-// `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24),
+// `inject_values_into_where`/`path_to_sparql` in `shacl::validator::constraints::sparql`, 0.3.24,
+// byte-identical in 0.3.42),
 // and step 3 rests on rudof's `ShaclProcessor::validate` using `par_iter_mut`. The rudof upper
 // bound in Cargo.toml is what keeps both true; raising it means re-reading those four functions
 // (tests/rudof_traps.rs has a control for each trap).
@@ -113,9 +114,10 @@ fn compile_shapes(ttl: &str) -> Result<(IRSchema, depth::Structure)> {
 // ---------------------------------------------------------------------------
 // Caller SPARQL never reaches the network (ledger #1099, #1083).
 //
-// rudof_rdf turns `oxigraph/http-client` on for every native target, so in this crate's own
-// build, and in every host linking it, oxigraph's `SparqlEvaluator::new()` installs an HTTP
-// service handler. rudof evaluates each `sh:select` through exactly that constructor, built
+// Wherever oxigraph's `http-client` feature is on, oxigraph's `SparqlEvaluator::new()` installs
+// an HTTP service handler. rudof_rdf turned it on for every native target through 0.3.39, so
+// that was this crate's own build; from 0.3.40 it does not, but any crate in a host's graph that
+// turns it on turns it on for rudof too, by feature unification. rudof evaluates each `sh:select` through exactly that constructor, built
 // privately inside `OxigraphInMemory::query_select`, so no refusing handler
 // (`ikigai_store::service::evaluator`) can be put on it: `SERVICE <http://…>` in a shapes graph
 // was an outbound request no `urn:cap:net:*` gates (tests/service_egress.rs). The guard is
@@ -128,12 +130,13 @@ fn compile_shapes(ttl: &str) -> Result<(IRSchema, depth::Structure)> {
 //    rudof copies into the header unescaped;
 // 5. the one piece the mirror replaces with a placeholder is the focus node, which rudof writes
 //    into `VALUES ?this { … }` with oxrdf's `Display`. A literal's lexical form is escaped there,
-//    and a blank-node label is lexed, but rudof's LENIENT Turtle reader keeps an IRI holding `>`
-//    in a literal's datatype or inside a triple term (it re-validates only plain subject,
-//    predicate and object IRIs), and that `>` ends the IRI in the query. So every IRI in both
-//    graphs is checked for the characters a SPARQL IRI cannot hold ([`check_iris`]).
+//    and a blank-node label is lexed, but an IRI holding `>` in a literal's datatype or inside a
+//    triple term ends the IRI in the query. rudof_rdf's reader kept those through 0.3.39 (it
+//    re-validated only plain subject, predicate and object IRIs); 0.3.40 refuses them as a
+//    parse error. Every IRI in both graphs is still checked for the characters a SPARQL IRI
+//    cannot hold ([`check_iris`]), so the guard does not rest on the reader.
 //
-// Only `sh:sparql`/`sh:select` is evaluated by rudof 0.3.24 (natively, in `ShaclValidationMode::
+// Only `sh:sparql`/`sh:select` is evaluated by rudof 0.3.24 and 0.3.42 (natively, in `ShaclValidationMode::
 // Native`); SPARQL-based targets (`sh:SPARQLTarget`), SPARQL-based constraint components
 // (`sh:ask`/`sh:validator`) and `owl:imports` are not parsed or fetched at all, and the egress
 // test pins that, so a rudof release that starts evaluating them fails it. `LOAD` cannot reach
@@ -245,8 +248,9 @@ fn bad_iri_in_triple(t: &oxrdf::Triple) -> Option<&str> {
 
 /// Refuse a graph holding an IRI that no SPARQL query can hold, as `InvalidArgument` on `role`.
 ///
-/// rudof parses Turtle leniently and re-validates only a triple's own subject, predicate and
-/// object IRIs, so `"v"^^<…>…>` or an IRI inside a triple term keeps a `>`. rudof then writes
+/// rudof_rdf's reader through 0.3.39 re-validated only a triple's own subject, predicate and
+/// object IRIs, so `"v"^^<…>…>` or an IRI inside a triple term kept a `>`; 0.3.40 refuses those
+/// at parse, and this check keeps the guard from resting on that. rudof writes
 /// a focus node into the query it runs for a `sh:sparql` constraint with oxrdf's `Display`,
 /// unescaped, where that `>` ends the IRI and the rest is query text: a `SERVICE` included. Such
 /// an IRI is not an IRI at all, so it is refused in every graph, whatever the shapes hold.
@@ -261,8 +265,8 @@ fn check_iris(graph: &RdfData, role: &str) -> Result<()> {
                 name: role.to_string(),
                 detail: format!(
                     "the {role} graph holds an IRI with a character no IRI may hold ({shown:?}). \
-                     rudof's lenient Turtle reader keeps it in a literal's datatype or inside a \
-                     triple term, and writes it unescaped into the SPARQL it runs for a \
+                     In a literal's datatype or inside a triple term, rudof would write it \
+                     unescaped into the SPARQL it runs for a \
                      `sh:sparql` constraint, where it would end the IRI and inject query text, a \
                      `SERVICE` included. Nothing was evaluated"
                 ),
@@ -760,5 +764,42 @@ mod tests {
             matches!(&err, Error::InvalidArgument { name, .. } if name == "shapes"),
             "{err}"
         );
+    }
+
+    /// [`check_iris`] on graphs built without a reader, so it is held to its job whatever the
+    /// Turtle reader in front of it lets through. rudof_rdf's reader stopped keeping these IRIs
+    /// in 0.3.40 (tests/service_egress.rs now sees a parse error for each), and before that
+    /// this check was all that refused them: a `>` in a literal's datatype, and one inside a
+    /// triple term, each breaking out of the `VALUES` clause rudof writes the focus node into.
+    #[test]
+    fn check_iris_refuses_what_the_reader_no_longer_lets_through() {
+        let breakout = "http://example.org/x> } SERVICE <http://127.0.0.1:9/> { ?s ?p ?o } \
+                        VALUES ?q { <http://example.org/y";
+        let ex =
+            |local: &str| oxrdf::NamedNode::new_unchecked(format!("http://example.org/{local}"));
+        let graph_of = |object: oxrdf::Term| {
+            let mut graph = OxigraphInMemory::empty();
+            graph.add_triple(ex("a"), ex("p"), object).unwrap();
+            RdfData::from_graph(graph).unwrap()
+        };
+        let datatype =
+            oxrdf::Literal::new_typed_literal("v", oxrdf::NamedNode::new_unchecked(breakout));
+        let triple_term =
+            oxrdf::Triple::new(oxrdf::NamedNode::new_unchecked(breakout), ex("q"), ex("r"));
+        for (name, object) in [
+            ("datatype", oxrdf::Term::from(datatype)),
+            ("triple term", oxrdf::Term::from(triple_term)),
+        ] {
+            match check_iris(&graph_of(object), "data") {
+                Err(Error::InvalidArgument { name: arg, detail }) => {
+                    assert_eq!(arg, "data", "{name}");
+                    assert!(detail.contains("no IRI may hold"), "{name}: {detail}");
+                }
+                other => panic!("{name}: a `>` in an IRI was not refused: {other:?}"),
+            }
+        }
+        // The control: the same graph with a clean datatype IRI passes.
+        let clean = oxrdf::Literal::new_typed_literal("v", ex("T"));
+        check_iris(&graph_of(oxrdf::Term::from(clean)), "data").unwrap();
     }
 }

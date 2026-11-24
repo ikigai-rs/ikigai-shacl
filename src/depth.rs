@@ -31,6 +31,17 @@
 //! `constructors/shacl.rs` and `sparql/basic.rs`'s `collect_prefixes`). The rudof upper bound
 //! in Cargo.toml is what keeps that mirror true; raising it means re-reading those.
 //!
+//! rudof 0.3.42 (ledger #4195) added SHACL 1.2 node expressions, compiled recursively from
+//! `ir/node_expr.rs` and `ir/target.rs`, and the walk follows them too (`sh:expression`,
+//! `sh:nodeByExpression`, `sh:targetWhere`, `sh:targetNode`, `sh:deactivated`, every `shnex:`
+//! predicate). It also made several old sites safe on its own: native recursion runs under
+//! `stacker::maybe_grow` (`shacl::with_stack`), paths and expressions stop at its own
+//! `MAX_PATH_DEPTH` (64), and `collect_prefixes` and list parsing are loops. The walk stays as
+//! it was for those: the bound costs nothing, and on wasm `with_stack` is a no-op. What the
+//! node-expression edges stop is no longer an abort on native but memory: 30,000 levels through
+//! `sh:targetWhere`, `sh:expression` or `sh:nodeByExpression` held 0.17 to 5.2 GB until the
+//! 120 s budget ran out (debug build, 2026-11-24).
+//!
 //! 3. **Depth that is the DATA's** (ledger #1326). A shape that refers back to itself along a
 //!    path (`ex:S sh:property [ sh:path ex:next ; sh:node ex:S ]`) is validated one call per
 //!    link of the data it reaches: rudof cuts a (node, shape) pair it is already inside, so a
@@ -105,6 +116,12 @@ const RDF_FIRST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#first";
 const RDF_REST: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest";
 #[cfg(feature = "rudof")]
 const OWL_IMPORTS: &str = "http://www.w3.org/2002/07/owl#imports";
+#[cfg(feature = "rudof")]
+/// The SHACL 1.2 node expression namespace. rudof 0.3.42 compiles a shape named under any of
+/// its shape-taking predicates (`shnex:nodesMatching`, `filterShape`, `findFirst`, `matchAll`)
+/// recursively, and parses the nested expressions (`shnex:nodes`, `if`, `concat`, …) one call
+/// per level, so the walk follows every predicate in it.
+const SHNEX: &str = "http://www.w3.org/ns/shacl-node-expr#";
 
 #[cfg(feature = "rudof")]
 /// What following one edge costs rudof, which decides what a CYCLE through it means.
@@ -131,6 +148,9 @@ enum Role {
     /// A shape reference to its object, or to each member of the list it names.
     Shape,
     ShapeList,
+    /// A reference into a SHACL 1.2 node expression (rudof `shacl` 0.3.42, ledger #4195): to its
+    /// object, or to each member when the object is a list (`shnex:concat ( … )`).
+    Expression,
     /// `sh:path`: from a shape to its path.
     Path,
     /// A path operator, which rudof follows only from a BLANK path node: to its operand, or to
@@ -149,6 +169,9 @@ fn role(predicate: &str) -> Option<Role> {
         OWL_IMPORTS => return Some(Role::Shape),
         _ => {}
     }
+    if predicate.starts_with(SHNEX) {
+        return Some(Role::Expression);
+    }
     Some(match predicate.strip_prefix(SH)? {
         "not"
         | "node"
@@ -158,6 +181,11 @@ fn role(predicate: &str) -> Option<Role> {
         | "sparql"
         | "prefixes" => Role::Shape,
         "and" | "or" | "xone" => Role::ShapeList,
+        // rudof 0.3.42: each takes a node expression (or, for `sh:targetWhere`, a shape), which
+        // it compiles recursively.
+        "expression" | "nodeByExpression" | "targetWhere" | "targetNode" | "deactivated" => {
+            Role::Expression
+        }
         "path" => Role::Path,
         "inversePath" => Role::InverseOperator,
         "zeroOrMorePath" | "oneOrMorePath" | "zeroOrOnePath" => Role::Operator,
@@ -173,7 +201,9 @@ fn role(predicate: &str) -> Option<Role> {
 ///
 /// The edges are rudof's recursion sites: from any node, `sh:not`, `sh:node`, `sh:property`,
 /// `sh:qualifiedValueShape`, `sh:reifierShape`, `sh:sparql`, `sh:prefixes` and `owl:imports`
-/// to their object, `sh:and`/`sh:or`/`sh:xone` to each member of their list, and `sh:path` to
+/// to their object, the node-expression references rudof 0.3.42 compiles (`sh:expression`,
+/// `sh:nodeByExpression`, `sh:targetWhere`, `sh:targetNode`, `sh:deactivated` and every
+/// `shnex:` predicate) to their object or each member of the list it is, `sh:and`/`sh:or`/`sh:xone` to each member of their list, and `sh:path` to
 /// the path; from a BLANK path node (rudof reads an IRI as a plain predicate and goes no
 /// further) the four unary path operators to their operand, `sh:alternativePath` to each
 /// member, and a sequence (the node is a list) to each member. A list's members are children
@@ -197,8 +227,9 @@ pub(crate) fn check_shapes_structure(shapes: &RdfData) -> Result<Structure> {
                 "this shapes graph nests {depth} deep, past {MAX_SHAPE_DEPTH} (MAX_SHAPE_DEPTH), \
                  counting the nodes along a chain of shape references (`sh:not`, `sh:and`, \
                  `sh:or`, `sh:xone`, `sh:node`, `sh:property`, `sh:qualifiedValueShape`, \
-                 `sh:reifierShape`, `sh:sparql`, `sh:prefixes`, `owl:imports`) and path \
-                 operators, a recursive group counting all of its shapes: the SHACL compiler \
+                 `sh:reifierShape`, `sh:sparql`, `sh:prefixes`, `owl:imports`, and the node \
+                 expressions of `sh:expression`, `sh:nodeByExpression`, `sh:targetWhere`, \
+                 `sh:targetNode`, `sh:deactivated` and `shnex:`) and path operators, a recursive group counting all of its shapes: the SHACL compiler \
                  recurses once per level, where a stack overflow aborts the whole host"
             ),
         });
@@ -305,6 +336,8 @@ fn analyze(shapes: &RdfData) -> Result<Structure> {
         let (edge, targets) = match role {
             Role::Shape => (Edge::Shape, vec![o]),
             Role::ShapeList => (Edge::Shape, members(o)),
+            Role::Expression if first.contains_key(&o) => (Edge::Shape, members(o)),
+            Role::Expression => (Edge::Shape, vec![o]),
             Role::Path => {
                 path_of.push((s, o));
                 (Edge::Path, vec![o])

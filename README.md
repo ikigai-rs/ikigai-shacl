@@ -126,8 +126,10 @@ collections 200,000 deep, in either graph) is not refused: oxttl parses it itera
 
 ## Caller SPARQL never reaches the network
 
-rudof_rdf turns on oxigraph's `http-client` feature on every native target, so this crate's own
-build, and every host linking it, has oxigraph's HTTP `SERVICE` handler installed. rudof runs
+Wherever oxigraph's `http-client` feature is on, oxigraph's evaluator has an HTTP `SERVICE`
+handler installed. rudof_rdf turned that feature on for every native target through 0.3.39, so
+it was on in this crate's own build; from 0.3.40 it is not, but any crate in a host's graph
+that turns it on (oxigraph's default features do) turns it on for rudof too. rudof runs
 each `sh:select` through an evaluator it builds privately, which no refusing handler can be put
 on, so a `SERVICE <http://…>` in a shapes graph was an outbound request that no `urn:cap:net:*`
 gated (ledger #1099). The guard is therefore entirely before rudof sees the text:
@@ -139,21 +141,23 @@ gated (ledger #1099). The guard is therefore entirely before rudof sees the text
   into an `sh:declare` prefix NAME, which rudof copies into its `PREFIX` header unescaped;
 - every IRI in both graphs, a literal's datatype and the parts of an RDF 1.2 triple term
   included, is refused (on `shapes` or `data`) when it holds a character no IRI may hold.
-  rudof's lenient Turtle reader keeps such an IRI there, and rudof writes the focus node into
-  the query unescaped, where a `>` ends the IRI and the rest becomes query text.
+  rudof writes the focus node into the query unescaped, where a `>` ends the IRI and the rest
+  becomes query text. rudof_rdf's reader kept such an IRI there through 0.3.39; 0.3.40 refuses
+  it as a parse error, and the check stays so the guard does not rest on the reader.
 
 The `SERVICE` refusal opens with this endpoint's own sentence (which constraint, assembled
 how), then carries `ikigai_store::service::SERVICE_REFUSAL`, the text every crate refusing a
 `SERVICE` through the store's walk shares, so one match finds them all (ledger #1108).
 No grant opens either refusal: the endpoint never federates. Fetch remote data through the
-kernel, where the net capability applies, and validate it as `data`. rudof 0.3.24 does not
+kernel, where the net capability applies, and validate it as `data`. rudof 0.3.42 (as 0.3.24 before it) does not
 evaluate SPARQL-based targets, SPARQL-based constraint components (`sh:ask`) or `owl:imports`
 at all; `tests/service_egress.rs` runs every case against a loopback stub, including a
-control that shows rudof's own evaluator does reach it in this build.
+control that shows rudof's own evaluator does reach it in the test build (which turns
+`http-client` on through a dev-dependency, as such a host would).
 
 ## Dependency pins
 
-The rudof crates are pinned with a **real upper bound** (`>=0.3.22, <0.3.25`), not a
+The rudof crates are pinned with a **real upper bound** (`>=0.3.42, <0.3.43`), not a
 caret. That is deliberate and it is not tidiness: rudof's 0.3 line makes breaking API
 changes inside *patch* releases — 0.3.17 added a third argument to
 `ShaclProcessor::validate` — and under Cargo's 0.x rules `^0.3.8` already means
@@ -162,10 +166,11 @@ changes inside *patch* releases — 0.3.17 added a third argument to
 flagged it: this repo does not commit `Cargo.lock`, so CI *would* have caught it — but CI
 had not run in 67 days.
 
-The floor, 0.3.22, is the first release whose validator builds for wasm (and whose
-`rudof_rdf` requires a `prefixmap` new enough that the direct constraint 0.1.3 carried is no
-longer needed). The ceiling is the newest release tested: both ends were resolved from
-scratch, built, and tested.
+The floor, 0.3.42, is the first `shacl` release that counts `sh:minLength` and
+`sh:maxLength` in characters (https://github.com/rudof-project/rudof/issues/963, fixed in
+0.3.40; `shacl` published neither 0.3.40 nor 0.3.41), and the ceiling admits only it: it was
+resolved from scratch, built, and tested. Before it the bounds were `>=0.3.22, <0.3.25`:
+0.3.22 is the first release whose validator builds for wasm.
 
 Raising the bound is a deliberate act. The daily build against the newest published
 rudof — and the shacl-engine half of the parity contract against the newest npm — runs
@@ -196,8 +201,8 @@ engine the endpoint does; `ikigai_shacl::core_shacl::validate_report` and `valid
 are the subset validator in every build.
 
 **Why it exists.** rudof cannot be built without a network stack on native: `rudof_iri` depends
-on reqwest unconditionally, and `rudof_rdf`'s native target turns on oxigraph's `http-client`
-and tokio, so a feature flag on rudof itself could not remove them. And rudof's validator
+on reqwest unconditionally, and `rudof_rdf`'s native target turns on tokio
+(and, through 0.3.39, oxigraph's `http-client`), so a feature flag on rudof itself could not remove them. And rudof's validator
 recurses along both graphs, so a deep enough input aborts the process that runs it (the bounds
 below refuse those inputs). A host that only validates shapes it ships, such as a plan door
 checking a plan against `ikigai_vocab::SHAPES`, links the subset instead: the reduced build is
@@ -244,10 +249,11 @@ neighbors:
   accepted;
 - the non-validating annotations `sh:name`, `sh:description`, `sh:order` and `sh:group`.
 
-⚠ The subset counts `sh:minLength` and `sh:maxLength` in characters (code points), as SHACL
-defines them. rudof, which serves the endpoint in the default build, counts UTF-8 bytes
-(https://github.com/rudof-project/rudof/issues/963), so a CJK string gets about a third of the
-room. `tests/string_length.rs` holds the subset to the right count and trips once rudof is fixed.
+Both validators count `sh:minLength` and `sh:maxLength` in characters (code points), as SHACL
+defines them. rudof, which serves the endpoint in the default build, counted UTF-8 bytes through
+`shacl` 0.3.39 (https://github.com/rudof-project/rudof/issues/963), so a CJK string got about a
+third of the room; this crate requires 0.3.42, which counts characters.
+`tests/string_length.rs` holds both validators to the character count.
 
 **It refuses everything else, by name.** Any other term of the SHACL namespace, as a predicate
 or as the class of an `rdf:type` (`sh:or`, `sh:not`, `sh:equals`, `sh:severity`,
