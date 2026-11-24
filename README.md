@@ -244,6 +244,11 @@ neighbors:
   accepted;
 - the non-validating annotations `sh:name`, `sh:description`, `sh:order` and `sh:group`.
 
+⚠ The subset counts `sh:minLength` and `sh:maxLength` in characters (code points), as SHACL
+defines them. rudof, which serves the endpoint in the default build, counts UTF-8 bytes
+(https://github.com/rudof-project/rudof/issues/963), so a CJK string gets about a third of the
+room. `tests/string_length.rs` holds the subset to the right count and trips once rudof is fixed.
+
 **It refuses everything else, by name.** Any other term of the SHACL namespace, as a predicate
 or as the class of an `rdf:type` (`sh:or`, `sh:not`, `sh:equals`, `sh:severity`,
 `sh:deactivated`, `sh:ask`, `sh:target`, `sh:SPARQLTarget`, …), a complex property path, a
