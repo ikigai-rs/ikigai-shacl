@@ -1,18 +1,19 @@
 //! `urn:shacl:validate` never reaches the network, in any build (ledger #1099, #1083).
 //!
-//! The claim: rudof_rdf enables `oxigraph/http-client` on every native target, so in THIS
-//! crate's own default build (and in every host linking it, by feature unification) oxigraph's
+//! The claim: in any build where oxigraph's `http-client` feature is on, oxigraph's
 //! `SparqlEvaluator::new()` installs its HTTP service handler. rudof evaluates a shape's
 //! `sh:sparql [ sh:select … ]` with exactly that constructor, once per focus node, so
 //! `SERVICE <http://…>` in a shapes graph was an outbound request with no `urn:cap:net:*`
 //! anywhere near it. The cli re-pin arc (ikigai-rs/ikigai-cli#435) saw it connect.
 //!
-//! ★ No test-only feature is needed to reproduce it here, unlike ikigai-store PR 28: the
-//! default native build IS the affected build (`cargo tree -i oxigraph -e features` names
-//! `http-client` through rudof_rdf). [`control_rudof_itself_reaches_the_stub`] proves the
-//! client is live in the build under test, by sending rudof's own query entry point a
-//! `SERVICE`; if it ever stops connecting, the refusals below prove nothing and must be
-//! re-derived.
+//! Through rudof_rdf 0.3.39 that was this crate's own default build: rudof_rdf turned
+//! `http-client` on for every native target. From 0.3.40 it does not (ledger #4195), but a host
+//! gets it back by feature unification as soon as anything else in its graph turns it on
+//! (oxigraph's default features do), and the guard is for that host. So the test build turns it
+//! on through a native-only dev-dependency (Cargo.toml), as ikigai-store PR 28 does with a
+//! test-only feature. [`control_rudof_itself_reaches_the_stub`] proves the client is live in
+//! the build under test, by sending rudof's own query entry point a `SERVICE`; if it ever stops
+//! connecting, the refusals below prove nothing and must be re-derived.
 //!
 //! rudof builds its evaluator privately (`OxigraphInMemory::query_select`), so no refusing
 //! handler can be installed on it: the check before rudof sees the text is the guard.
@@ -260,8 +261,13 @@ fn cases(url: &str) -> Vec<Case> {
             ),
             ParseError,
         ),
-        // ... but a literal's DATATYPE IRI is not re-validated: from the SHAPES graph through
-        // `sh:targetNode`, ...
+        // ... and since rudof_rdf 0.3.40 so is one in a literal's DATATYPE, from the SHAPES
+        // graph through `sh:targetNode`, from the DATA graph through `sh:targetObjectsOf`, and
+        // inside an RDF 1.2 triple term. Through 0.3.39 the reader kept those three, and only
+        // `check_iris` stood between them and the query (the unit test
+        // `check_iris_refuses_what_the_reader_no_longer_lets_through` in src/rudof_engine.rs
+        // still holds it to them). Either way nothing is evaluated and nothing connects; `>` is
+        // not a character any IRI may hold (RFC 3987), so a parse error is the right answer.
         (
             "shapes-target-literal-datatype",
             DATA.into(),
@@ -270,9 +276,8 @@ fn cases(url: &str) -> Vec<Case> {
                  sh:sparql [ sh:select \"\"\"SELECT $this WHERE {{ OPTIONAL {{ $this a ?t }} }}\"\"\" ] .\n",
                 breakout_iri(url)
             ),
-            Refused("shapes"),
+            ParseError,
         ),
-        // ... from the DATA graph, a value reached by `sh:targetObjectsOf`, ...
         (
             "data-literal-datatype",
             format!(
@@ -283,9 +288,8 @@ fn cases(url: &str) -> Vec<Case> {
                 "{HEAD}ex:S a sh:NodeShape ; sh:targetObjectsOf ex:p ;\n  \
                  sh:sparql [ sh:select \"\"\"SELECT $this WHERE {{ OPTIONAL {{ ?s ?p $this }} }}\"\"\" ] .\n"
             ),
-            Refused("data"),
+            ParseError,
         ),
-        // ... and nor is an IRI inside an RDF 1.2 triple term, written as `<<( … )>>`.
         (
             "data-triple-term",
             format!(
@@ -296,7 +300,7 @@ fn cases(url: &str) -> Vec<Case> {
                 "{HEAD}ex:S a sh:NodeShape ; sh:targetObjectsOf ex:p ;\n  \
                  sh:sparql [ sh:select \"\"\"SELECT $this WHERE {{ OPTIONAL {{ ?s ?p $this }} }}\"\"\" ] .\n"
             ),
-            Refused("data"),
+            ParseError,
         ),
         // A literal focus node's LEXICAL FORM: oxrdf escapes its quotes, so it cannot break
         // out. Not refused (nothing to refuse), and must not connect.
